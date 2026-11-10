@@ -67,6 +67,10 @@ def extract_text_from_image(image_bytes: bytes) -> dict:
             tesseract_cmd = os.getenv("TESSERACT_CMD")
             if tesseract_cmd:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+            elif not shutil.which("tesseract"):
+                default_tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+                if os.path.isfile(default_tesseract_path):
+                    pytesseract.pytesseract.tesseract_cmd = default_tesseract_path
             ocr_text = pytesseract.image_to_string(image)
         except ImportError:
             return {
@@ -75,6 +79,18 @@ def extract_text_from_image(image_bytes: bytes) -> dict:
                 "image_dimensions": f"{width}x{height}",
                 "format": image.format or "JPEG",
                 "error": "Image OCR is unavailable. Install Tesseract OCR and the pytesseract package."
+            }
+        except pytesseract.pytesseract.TesseractNotFoundError:
+            return {
+                "success": False,
+                "extracted_text": "",
+                "image_dimensions": f"{width}x{height}",
+                "format": image.format or "JPEG",
+                "error": (
+                    "Tesseract OCR was not found. Install Tesseract, then add it to PATH "
+                    "or set TESSERACT_CMD to the full path of tesseract.exe "
+                    "(commonly C:\\Program Files\\Tesseract-OCR\\tesseract.exe), and restart the app."
+                )
             }
         except Exception as exc:
             return {

@@ -134,6 +134,7 @@ function renderVerificationResults(data) {
   const videoResult = data.video_result;
   const notices = [];
   if (data.ocr_result?.error && data.input_text) notices.push(data.ocr_result.error);
+  if (data.fact_check_lookup?.message) notices.push(data.fact_check_lookup.message);
   if (videoResult) {
     notices.push(videoResult.error || "Sampled on-screen text was analyzed.");
     notices.push("Video speech is not transcribed.");
@@ -414,6 +415,23 @@ async function loadWhatsAppStatus() {
   }
 }
 
+async function loadFactCheckApiStatus() {
+  const statusBox = document.getElementById("factCheckApiStatus");
+  try {
+    const status = await fetchJson("/api/integrations-status");
+    if (status.google_fact_check_configured) {
+      statusBox.textContent = `Google Fact Check API key is configured; this does not confirm Google accepts it. The verification result shows the latest lookup status. ${status.local_fact_check_records} local records are also available.`;
+      statusBox.className = "alert alert-info mt-3 small";
+    } else {
+      statusBox.textContent = `Google Fact Check API key is not configured. Using ${status.local_fact_check_records} local records only. Set GOOGLE_FACT_CHECK_API_KEY in the server environment and restart the app.`;
+      statusBox.className = "alert alert-warning mt-3 small";
+    }
+  } catch (error) {
+    statusBox.textContent = `Could not check external fact-check service: ${error.message}`;
+    statusBox.className = "alert alert-danger mt-3 small";
+  }
+}
+
 document.getElementById("verifyForm").addEventListener("submit", submitVerification);
 document.getElementById("simSendBtn").addEventListener("click", sendSimulatedMsg);
 document.getElementById("simInput").addEventListener("keydown", event => {
@@ -429,3 +447,4 @@ document.querySelectorAll('#mainTab button[data-bs-toggle="tab"]').forEach(butto
   });
 });
 loadWhatsAppStatus();
+loadFactCheckApiStatus();

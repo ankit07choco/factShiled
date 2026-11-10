@@ -24,6 +24,16 @@ def test_verify_endpoint_text():
     assert "BOOM" in data["explanation"]
     print("✅ POST /api/verify correctly classified false claim with explanation")
 
+def test_verify_bengali_chandrayaan_claim():
+    claim = "চন্দ্রযান-৩ ২০২৩ সালের ২৩ আগস্ট চাঁদে সফলভাবে অবতরণ করেছিল।"
+    resp = client.post("/api/verify", data={"text": claim})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["verdict"] == "Likely True"
+    assert data["confidence_score"] >= 70
+    assert "ISRO" in data["explanation"]
+    assert data["sources"][0]["url"] == "https://www.isro.gov.in/Chandrayaan3.html"
+
 def test_fact_checks_api():
     resp = client.get("/api/fact-checks?query=garlic")
     assert resp.status_code == 200
@@ -47,6 +57,21 @@ def test_viva_api():
     assert "evaluation_metrics" in data
     assert "limitations" in data
     print("✅ GET /api/viva-info returns viva defense metrics")
+
+def test_viva_api_does_not_invent_perfect_metrics_when_file_missing():
+    with patch("app.main.os.path.exists", return_value=False):
+        resp = client.get("/api/viva-info")
+    assert resp.status_code == 200
+    assert resp.json()["evaluation_metrics"] == {}
+
+def test_integrations_status_does_not_expose_api_key():
+    with patch.dict("os.environ", {"GOOGLE_FACT_CHECK_API_KEY": "secret-test-key"}):
+        resp = client.get("/api/integrations-status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["google_fact_check_configured"] is True
+    assert data["local_fact_check_records"] >= 1
+    assert "secret-test-key" not in resp.text
 
 def test_whatsapp_status_does_not_expose_credentials():
     resp = client.get("/api/whatsapp-status")

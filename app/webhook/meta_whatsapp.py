@@ -24,7 +24,7 @@ MediaDownloader = Callable[[str], Tuple[bytes, str]]
 
 def verify_meta_webhook(mode: Optional[str], token: Optional[str], challenge: Optional[str]):
     """Handles Meta WhatsApp Cloud API webhook handshake (GET request)."""
-    if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
+    if WEBHOOK_VERIFY_TOKEN and mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
         return int(challenge) if challenge and challenge.isdigit() else challenge
     return None
 

@@ -34,10 +34,12 @@ WhatsApp user → Meta Cloud API → FastAPI Webhook
 > A model trained purely on LIAR or ISOT learns *writing style*, not *factual truth*. Such models collapse when tested on real WhatsApp forwards which frequently combine sensational headings with real news, or colloquial Indian languages (Hinglish, Bengali, Tamil).
 >
 > In FactShield AI:
-> 1. **Fact-check DB lookup (40% weight):** Matches against verified debunking claims (ClaimReview schema).
-> 2. **Semantic search (25% weight):** Vector similarity search over indexed Indian & global fact-checks.
-> 3. **Linguistic style classifier (20% weight):** Flags ALL CAPS, urgency keywords, forwarding pressure ("forward to 10 groups"), and authority hijacking ("UNESCO", "NASA").
-> 4. **Evidence & domain authority (15% weight):** Checks URL credibility and news corroboration.
+> 1. **Fact-check retrieval:** Looks for relevant local records and, when configured, published reviews from Google Fact Check Tools.
+> 2. **Local text search:** TF-IDF similarity over the small bundled fact-check database (not a general web or knowledge search).
+> 3. **Style heuristics/classifier:** Flags ALL CAPS, urgency keywords, forwarding pressure, and sensational wording; style alone does not establish truth.
+> 4. **Source links:** Displays URLs included with matched reviews; it does not independently verify domain authority or corroborate every URL.
+>
+> The UI exposes signal weights for explanation, but verdicts are currently rule-based: a sufficiently relevant retrieved review supplies the True/False rating; without one the result is Unverified. The confidence number is a heuristic, not a calibrated probability.
 
 ---
 
@@ -55,7 +57,21 @@ py -m venv .venv
 pip install -r requirements-dev.txt
 ```
 
-On Windows, install Tesseract OCR separately, then reopen the terminal so it is on `PATH`. If it is installed outside `PATH`, set `TESSERACT_CMD` to the full path of `tesseract.exe`. Install FFmpeg and add its `bin` folder to `PATH`; `FFMPEG_PATH` can be used to point to a specific executable.
+On Windows, install Tesseract OCR (for example, with `winget install --id UB-Mannheim.TesseractOCR -e`), then close and reopen the terminal. Check that it is available with:
+```powershell
+where.exe tesseract
+tesseract --version
+```
+If Tesseract is installed but not on `PATH`, set its executable path in the project's `.env` file:
+```dotenv
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
+Alternatively, set it for the current PowerShell session before starting the app:
+```powershell
+$env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+python run.py
+```
+Use the actual installation path if it differs. Install FFmpeg and add its `bin` folder to `PATH`; `FFMPEG_PATH` can be used to point to a specific executable.
 
 ### 3. Run tests
 ```powershell
@@ -101,6 +117,23 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 Image and video analysis requires FFmpeg and Tesseract to be installed on the server. Videos are sampled for visible on-screen text only; audio/speech transcription is not currently supported. The displayed evaluation metrics are from the supplied evaluation data and should not be treated as a guarantee for new claims.
 
+## 🌐 Enable external fact-check search
+
+The verifier can query Google's **Fact Check Tools API** for previously published fact-checks. It does not search the entire web and cannot guarantee a result for every real-world event.
+
+1. Create or select a project in Google Cloud, enable the Fact Check Tools API, and create an API key with access to that API.
+2. Copy `.env.example` to `.env` in the project root and set your key:
+
+   ```dotenv
+   GOOGLE_FACT_CHECK_API_KEY=your-google-api-key
+   ```
+
+   The app loads `.env` automatically when it starts. Keep `.env` private; it is excluded from Git. Restart the server after changing it. Alternatively, you can still set `GOOGLE_FACT_CHECK_API_KEY` in the server's environment.
+
+3. Check `GET /api/integrations-status` or the verifier page to confirm external lookup is enabled.
+
+Each claim verification makes a server-side request to `claims:search`, with the detected language where available. API errors are shown in the result and local records are still checked. Google API quotas and billing/availability are controlled by your Google Cloud project. If there is no relevant published review, the correct result remains **Unverified** rather than guessing from unrelated web pages.
+
 ## 🌟 Key Features
 
 1. **Indian-Language Support:**
@@ -126,14 +159,14 @@ Image and video analysis requires FFmpeg and Tesseract to be installed on the se
 
 ## 📊 Evaluation & Benchmarks
 
-| Metric | In-Domain (WhatsApp) | Cross-Dataset Transfer (ISOT ➔ WhatsApp) |
-|---|---|---|
-| **Accuracy** | 94.2% | 54.1% (Classification alone fails) |
-| **Precision** | 93.8% | 51.5% |
-| **Recall** | 95.0% | 56.2% |
-| **F1 Score** | 94.4% | 53.7% |
+| Metric | In-domain (configured data) | ISOT train/test (configured data) | ISOT/LIAR → WhatsApp transfer (configured data) |
+|---|---:|---:|---:|
+| **Accuracy** | 100.0% | 88.5% | 54.1% |
+| **Precision** | 100.0% | 87.9% | 51.5% |
+| **Recall** | 100.0% | 89.1% | 56.2% |
+| **F1 Score** | 100.0% | 88.5% | 52.6% |
 
-*Conclusion:* Cross-dataset drop shows that pure NLP classification without retrieval fails on real WhatsApp misinformation. Retrieval over fact-check databases is mandatory.
+These values are copied from `data/evaluation_metrics.json`; the corresponding evaluation datasets and reproducible evaluation procedure are not included here. Treat them as unverified project-reported metrics, not independently validated performance claims.
 
 ---
 

@@ -49,7 +49,11 @@ class VerificationPipeline:
 
         # Step 3: Multi-signal evaluation
         # Signal 1 & 2: Fact-Check API & Semantic vector DB search
-        fact_check_result = fact_check_engine.find_matches(primary_claim, api_key=api_key)
+        fact_check_result = fact_check_engine.find_matches(
+            primary_claim,
+            api_key=api_key,
+            language_code=lang_info["code"]
+        )
 
         # Signal 3: Style & Sensationalism classifier
         style_features = style_classifier.extract_features(input_text)
@@ -84,6 +88,7 @@ class VerificationPipeline:
             "explanation": verdict_data["explanation"],
             "signals": verdict_data["signals"],
             "sources": verdict_data["sources"],
+            "fact_check_lookup": fact_check_result["external_lookup"],
             "whatsapp_reply": whatsapp_reply,
             "disclaimer": verdict_data["disclaimer"]
         }

@@ -46,8 +46,7 @@ async def read_root(request: Request):
 async def verify_claim_endpoint(
     text: Optional[str] = Form(None),
     image: Optional[UploadFile] = File(None),
-    video: Optional[UploadFile] = File(None),
-    api_key: Optional[str] = Form(None)
+    video: Optional[UploadFile] = File(None)
 ):
     """
     Core claim verification API endpoint.
@@ -87,12 +86,28 @@ async def verify_claim_endpoint(
             content={"error": "Please provide claim text or upload an image or video."}
         )
 
-    result = pipeline.verify(text=text, image_bytes=image_bytes, api_key=api_key)
+    result = pipeline.verify(text=text, image_bytes=image_bytes)
     if video_result:
         result["video_result"] = video_result
     if result.get("error") and not result.get("input_text"):
         return JSONResponse(status_code=422, content={"error": result["error"], **result})
     return JSONResponse(content=result)
+
+@app.get("/api/integrations-status")
+async def integrations_status():
+    """Reports enabled evidence sources without exposing API credentials."""
+    return {
+        "local_fact_check_records": len(fact_check_engine.fact_checks),
+        "google_fact_check_configured": bool(
+            os.getenv("GOOGLE_FACT_CHECK_API_KEY")
+        ),
+        "google_fact_check_provider": "Google Fact Check Tools API",
+        "note": (
+            "Configured means a key is present, not that Google accepted it. "
+            "A verification response reports the latest lookup status. "
+            "The API searches published fact checks, not the entire web."
+        )
+    }
 
 @app.get("/api/fact-checks")
 async def get_fact_checks(
@@ -192,9 +207,7 @@ async def get_viva_info():
             "Signal 4: Source & Evidence Retrieval with URL Domain Authority Score",
             "Preprocessing: Language Detection (langdetect for Hindi/Bengali/English) & Image OCR Text Extraction"
         ],
-        "evaluation_metrics": metrics_data.get("pipeline_in_domain_metrics", {
-            "accuracy": 1.0, "precision": 1.0, "recall": 1.0, "f1_score": 1.0
-        }),
+        "evaluation_metrics": metrics_data.get("pipeline_in_domain_metrics", {}),
         "cross_dataset_test": metrics_data.get("cross_dataset_evaluation", {}),
         "error_analysis": metrics_data.get("error_analysis", []),
         "limitations": [

@@ -46,10 +46,18 @@ def compute_verdict_and_score(
             fake_score = max(fake_score, 78.0)
             verdict = VERDICT_LIKELY_FALSE
             confidence = min(round(fake_score), 98)
-            explanation = (
-                f"A closely matching claim was previously debunked as FALSE by "
-                f"{top_match.get('publisher', 'independent fact-checkers')}."
-            )
+            date_mismatch = top_match.get("date_mismatch")
+            if date_mismatch:
+                explanation = (
+                    f"The claim gives {date_mismatch['claimed_date']}, but "
+                    f"{top_match.get('publisher', 'the source')} records the event "
+                    f"date as {date_mismatch['verified_date']}."
+                )
+            else:
+                explanation = (
+                    f"A closely matching claim was previously debunked as FALSE by "
+                    f"{top_match.get('publisher', 'independent fact-checkers')}."
+                )
         elif "true" in fc_verdict:
             # Fact check says true
             fake_score = (1.0 - fc_sim) * 30 + (style_fake_prob * 20)
@@ -61,9 +69,12 @@ def compute_verdict_and_score(
                 f"confirms this claim is genuine."
             )
         else:
-            verdict = VERDICT_DISPUTED
-            confidence = 60
-            explanation = "Available fact checks indicate disputed or context-dependent evidence."
+            verdict = VERDICT_UNVERIFIED
+            confidence = 35
+            explanation = (
+                "A related published review was found, but it does not provide a clear "
+                "true/false rating for this claim."
+            )
     else:
         # No direct fact check found in database
         if is_sensational or style_fake_prob >= 0.50:
