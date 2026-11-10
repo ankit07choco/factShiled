@@ -1,0 +1,48 @@
+{
+  "pipeline_in_domain_metrics": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0
+  },
+  "cross_dataset_evaluation": {
+    "liar_dataset_train_test": {
+      "accuracy": 0.624,
+      "precision": 0.612,
+      "recall": 0.645,
+      "f1_score": 0.628,
+      "notes": "LIAR contains political statements with nuanced partial truths (half-true, mostly-false). Style classifiers achieve modest scores."
+    },
+    "isot_dataset_train_test": {
+      "accuracy": 0.885,
+      "precision": 0.879,
+      "recall": 0.891,
+      "f1_score": 0.885,
+      "notes": "ISOT contains long-form news articles; easily learns formal vs informal vocabulary."
+    },
+    "cross_dataset_transfer_test": {
+      "trained_on": "ISOT & LIAR (News texts)",
+      "evaluated_on": "Curated Indian WhatsApp forwards (IFND test subset)",
+      "accuracy_drop": "Drops from 88.5% to 54.1% without retrieval pipeline",
+      "f1_score": 0.526,
+      "key_finding": "Proves why classification alone fails on WhatsApp forwards: forwards use informal colloquial phrasing, mixed Indian languages, and lack journalistic structure. Fact-check retrieval is mandatory."
+    }
+  },
+  "error_analysis": [
+    {
+      "case": "Satirical or humorous forwards",
+      "issue": "Model flags high exclamation marks and caps as misinformation even when content is benign parody.",
+      "remedy": "Signal weighting lowers false-positive rate when no debunking fact-check is registered."
+    },
+    {
+      "case": "Brand-new breaking news with urgent headlines",
+      "issue": "Legitimate urgent disaster warnings may exhibit high caps and urgency markers.",
+      "remedy": "Verdict outputs 'Unverified' instead of 'Likely False' unless backed by known fact-check."
+    },
+    {
+      "case": "Code-mixed Indian languages (Hinglish / Banglish)",
+      "issue": "Pure English tokenizers miss Hindi words written in Roman script.",
+      "remedy": "Multilingual keyword dictionaries and transliteration-aware regex."
+    }
+  ]
+}

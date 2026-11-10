@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FactShield AI - Claim Verification</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg border-bottom border-dark py-3">
+    <div class="container-fluid px-4">
+      <a class="navbar-brand d-flex align-items-center gap-2" href="/">
+        <i class="fa-brands fa-whatsapp fa-lg text-success"></i>
+        <span>FactShield <span class="badge bg-success text-dark fs-6 ms-1">AI</span></span>
+      </a>
+      <span class="navbar-text text-muted d-none d-md-inline">
+        <i class="fa-solid fa-shield-halved text-success me-1"></i>
+        Multi-Signal Claim Verification
+      </span>
+      <span class="badge bg-success-subtle text-success border border-success px-3 py-2">
+        <i class="fa-solid fa-circle-check me-1"></i> API Active
+      </span>
+    </div>
+  </nav>
+
+  <main class="container-fluid px-4 mt-3">
+    <ul class="nav nav-tabs border-bottom border-secondary" id="mainTab" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="verify-tab" data-bs-toggle="tab" data-bs-target="#verify-pane" type="button" role="tab">
+          <i class="fa-solid fa-magnifying-glass-chart me-2"></i>Claim Verifier
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="sim-tab" data-bs-toggle="tab" data-bs-target="#sim-pane" type="button" role="tab">
+          <i class="fa-brands fa-whatsapp me-2"></i>WhatsApp Simulator
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="db-tab" data-bs-toggle="tab" data-bs-target="#db-pane" type="button" role="tab">
+          <i class="fa-solid fa-database me-2"></i>Fact-Check Database
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="analytics-tab" data-bs-toggle="tab" data-bs-target="#analytics-pane" type="button" role="tab">
+          <i class="fa-solid fa-chart-pie me-2"></i>Analytics &amp; Metrics
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="viva-tab" data-bs-toggle="tab" data-bs-target="#viva-pane" type="button" role="tab">
+          <i class="fa-solid fa-graduation-cap me-2"></i>Metrics &amp; Architecture
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content pt-4" id="mainTabContent">
+      <section class="tab-pane fade show active" id="verify-pane" role="tabpanel" aria-labelledby="verify-tab">
+        <div class="row g-4">
+          <div class="col-lg-6">
+            <div class="card card-custom p-4">
+              <h5 class="card-title fw-bold text-success mb-3">
+                <i class="fa-solid fa-paper-plane me-2"></i>Analyze a message or forward
+              </h5>
+              <div class="mb-3">
+                <label class="form-label text-muted small fw-semibold">QUICK TESTS:</label>
+                <div class="d-flex flex-wrap gap-2">
+                  <button class="preset-chip" type="button" onclick="applyPreset('unesco')">UNESCO Anthem</button>
+                  <button class="preset-chip" type="button" onclick="applyPreset('garlic')">Garlic COVID Cure</button>
+                  <button class="preset-chip" type="button" onclick="applyPreset('recharge')">Free Recharge Scam</button>
+                  <button class="preset-chip" type="button" onclick="applyPreset('nasa')">NASA Diwali Image</button>
+                  <button class="preset-chip" type="button" onclick="applyPreset('isro')">Chandrayaan-3</button>
+                </div>
+              </div>
+              <form id="verifyForm">
+                <div class="mb-3">
+                  <label for="claimInput" class="form-label">Message or claim</label>
+                  <textarea class="form-control bg-dark text-light border-secondary" id="claimInput" rows="5" placeholder="Paste a message or claim..."></textarea>
+                </div>
+                <div class="mb-3">
+                  <label for="imageInput" class="form-label">Image (OCR)</label>
+                  <input class="form-control bg-dark text-light border-secondary" type="file" id="imageInput" accept="image/*">
+                </div>
+                <div class="mb-3">
+                  <label for="videoInput" class="form-label">Video (sampled on-screen text)</label>
+                  <input class="form-control bg-dark text-light border-secondary" type="file" id="videoInput" accept="video/*">
+                  <div class="form-text">Requires FFmpeg and Tesseract. Video speech is not transcribed.</div>
+                </div>
+                <button type="submit" class="btn btn-success w-100 fw-bold py-2" id="verifyBtn">
+                  <i class="fa-solid fa-shield-virus me-2"></i>Run Verification
+                </button>
+              </form>
+              <div id="verifyError" class="alert alert-danger mt-3 d-none" role="alert"></div>
+            </div>
+          </div>
+
+          <div class="col-lg-6">
+            <div class="card card-custom p-4 h-100" id="resultsContainer">
+              <div class="text-center py-5 text-muted" id="placeholderResult">
+                <i class="fa-solid fa-magnifying-glass-location fa-3x mb-3 text-secondary"></i>
+                <h5>No claim analyzed yet</h5>
+                <p class="small">Enter text or upload an image or video to see the verification result.</p>
+              </div>
+              <div id="actualResult" class="d-none">
+                <div class="d-flex align-items-center justify-content-between mb-3 pb-3 border-bottom border-secondary">
+                  <div>
+                    <h5 class="mb-1 fw-bold">Verification Result</h5>
+                    <span class="badge bg-dark text-info border border-info" id="langBadge">English</span>
+                  </div>
+                  <span id="verdictBadge" class="badge-verdict badge-unverified">Unverified</span>
+                </div>
+                <div class="mb-4 text-center">
+                  <div class="display-6 fw-bold text-light mb-1" id="confidenceScore">0%</div>
+                  <div class="text-muted small">Confidence estimate</div>
+                  <div class="progress mt-2 bg-dark border border-secondary" style="height: 10px;">
+                    <div id="confidenceBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;"></div>
+                  </div>
+                </div>
+                <div class="p-3 rounded bg-dark border border-secondary mb-3">
+                  <h6 class="fw-bold text-success mb-2"><i class="fa-solid fa-circle-info me-2"></i>Explanation</h6>
+                  <p class="small text-light mb-0" id="explanationText"></p>
+                </div>
+                <h6 class="fw-bold text-muted small text-uppercase mb-2">Signal Breakdown</h6>
+                <div class="d-flex flex-column gap-2 mb-4">
+                  <div class="d-flex justify-content-between small"><span>Fact-check match (40%)</span><span id="signalFcScore">0%</span></div>
+                  <div class="d-flex justify-content-between small"><span>Semantic similarity (25%)</span><span id="signalSemScore">0%</span></div>
+                  <div class="d-flex justify-content-between small"><span>Writing style (20%)</span><span id="signalStyleScore">0%</span></div>
+                  <div class="d-flex justify-content-between small"><span>Source evidence (15%)</span><span id="signalEvidScore">0%</span></div>
+                </div>
+                <h6 class="fw-bold text-muted small text-uppercase mb-2">Sources</h6>
+                <div id="sourcesList" class="small text-muted mb-3">No direct source.</div>
+                <div id="mediaNotice" class="small text-warning"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane fade" id="sim-pane" role="tabpanel" aria-labelledby="sim-tab">
+        <div class="row g-4 justify-content-center">
+          <div class="col-lg-5 d-flex justify-content-center">
+            <div class="phone-mockup">
+              <div class="whatsapp-header">
+                <i class="fa-solid fa-circle-user fa-2x text-secondary"></i>
+                <div>
+                  <h6 class="mb-0 fw-bold">FactShield Verification Bot</h6>
+                  <small class="text-success" id="botStatus">Local simulator</small>
+                </div>
+              </div>
+              <div class="chat-container" id="chatContainer">
+                <div class="chat-bubble bot">Hello! Send a text or attach an image/video to test verification.</div>
+              </div>
+              <div class="chat-input-area flex-wrap">
+                <input type="text" id="simInput" class="form-control form-control-sm bg-dark text-light border-secondary" placeholder="Type a message...">
+                <input type="file" id="simMediaInput" class="form-control form-control-sm bg-dark text-light border-secondary" accept="image/*,video/*" aria-label="Attach an image or video">
+                <button class="btn btn-success btn-sm" id="simSendBtn" type="button" aria-label="Send"><i class="fa-solid fa-paper-plane"></i></button>
+              </div>
+            </div>
+          </div>
+          <div class="col-lg-7">
+            <div class="card card-custom p-4 h-100">
+              <h5 class="fw-bold text-success mb-3"><i class="fa-solid fa-code me-2"></i>Webhook inspector</h5>
+              <p class="small text-muted">The simulator runs locally. To receive real WhatsApp DMs, configure Meta Cloud API credentials and register this server's public HTTPS webhook URL.</p>
+              <div id="whatsappStatus" class="alert alert-secondary small" role="status">Checking WhatsApp configuration...</div>
+              <pre class="bg-dark p-3 rounded text-info border border-secondary small overflow-auto" id="webhookJsonInspector" style="max-height: 400px;">No simulator event sent yet.</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane fade" id="db-pane" role="tabpanel" aria-labelledby="db-tab">
+        <div class="card card-custom p-4">
+          <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+            <h5 class="fw-bold text-success mb-0"><i class="fa-solid fa-database me-2"></i>Fact-Check Knowledge Base</h5>
+            <div class="d-flex flex-wrap gap-2">
+              <input type="search" id="dbSearchInput" class="form-control form-control-sm bg-dark text-light border-secondary" placeholder="Search claims..." aria-label="Search claims">
+              <select id="dbCatFilter" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Filter by category">
+                <option value="All">All Categories</option>
+              </select>
+            </div>
+          </div>
+          <div id="dbError" class="alert alert-danger d-none" role="alert"></div>
+          <div class="table-responsive">
+            <table class="table table-dark table-hover border-secondary align-middle small">
+              <thead><tr><th>ID</th><th>Claim</th><th>Verdict</th><th>Category</th><th>Lang</th><th>Publisher</th><th>Source</th></tr></thead>
+              <tbody id="dbTableBody"><tr><td colspan="7" class="text-center text-muted">Loading fact checks...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane fade" id="analytics-pane" role="tabpanel" aria-labelledby="analytics-tab">
+        <div id="analyticsError" class="alert alert-danger d-none" role="alert"></div>
+        <div class="row g-4">
+          <div class="col-md-6"><div class="card card-custom p-4"><h6 class="fw-bold text-success mb-3">Verdict Distribution</h6><canvas id="verdictChart" style="max-height: 300px;"></canvas></div></div>
+          <div class="col-md-6"><div class="card card-custom p-4"><h6 class="fw-bold text-success mb-3">Fact Checks by Category</h6><canvas id="categoryChart" style="max-height: 300px;"></canvas></div></div>
+        </div>
+      </section>
+
+      <section class="tab-pane fade" id="viva-pane" role="tabpanel" aria-labelledby="viva-tab">
+        <div class="card card-custom p-4">
+          <h4 class="fw-bold text-success mb-3"><i class="fa-solid fa-graduation-cap me-2"></i>Evaluation Metrics &amp; Architecture</h4>
+          <div id="vivaError" class="alert alert-danger d-none" role="alert"></div>
+          <div id="vivaMetricsContent" class="text-muted">Loading metrics...</div>
+          <div class="mt-4">
+            <h6 class="fw-bold">Limitations</h6>
+            <ul id="limitationsList" class="small text-muted"></ul>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/static/js/app.js?v=2"></script>
+</body>
+</html>
