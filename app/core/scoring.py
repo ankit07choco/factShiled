@@ -7,6 +7,7 @@ VERDICT_LIKELY_TRUE = "Likely True"
 
 def compute_verdict_and_score(
     fact_check_result: Dict[str, Any],
+    web_search_result: Dict[str, Any],
     style_features: Dict[str, Any],
     claim_text: str,
     urls: List[str]
@@ -32,6 +33,11 @@ def compute_verdict_and_score(
 
     # Baseline fake score (0 to 100)
     fake_score = 50.0
+
+    has_web_assessment = (
+        web_search_result.get("status") == "success"
+        and web_search_result.get("sources")
+    )
 
     if has_strong_fc and top_match:
         fc_verdict = str(top_match.get("verdict", "")).lower()
@@ -75,6 +81,29 @@ def compute_verdict_and_score(
                 "A related published review was found, but it does not provide a clear "
                 "true/false rating for this claim."
             )
+    elif has_web_assessment:
+        verdict = web_search_result.get("verdict", VERDICT_UNVERIFIED)
+        if verdict not in {
+            VERDICT_LIKELY_FALSE,
+            VERDICT_LIKELY_TRUE,
+            VERDICT_DISPUTED,
+            VERDICT_UNVERIFIED,
+        }:
+            verdict = VERDICT_UNVERIFIED
+        web_explanation = web_search_result.get("explanation") or (
+            "Web search did not provide enough direct evidence to assess this claim."
+        )
+        explanation = (
+            "AI assessment grounded in Bing search results using a local model "
+            "(not a published fact-check): "
+            f"{web_explanation}"
+        )
+        confidence = {
+            VERDICT_LIKELY_FALSE: 65,
+            VERDICT_LIKELY_TRUE: 65,
+            VERDICT_DISPUTED: 50,
+            VERDICT_UNVERIFIED: 35,
+        }[verdict]
     else:
         # No direct fact check found in database
         if is_sensational or style_fake_prob >= 0.50:
@@ -127,8 +156,12 @@ def compute_verdict_and_score(
         sources.append({
             "title": f"{top_match.get('publisher', 'Source')}: {top_match.get('claim', '')[:60]}...",
             "url": top_match.get("url"),
-            "publisher": top_match.get("publisher", "")
+            "publisher": top_match.get("publisher", ""),
+            "source_type": "Published fact-check"
         })
+    for source in web_search_result.get("sources", []):
+        if source.get("url") not in {item["url"] for item in sources}:
+            sources.append(source)
 
     return {
         "verdict": verdict,
@@ -137,5 +170,8 @@ def compute_verdict_and_score(
         "signals": signals,
         "top_source": top_match.get("url") if top_match else None,
         "sources": sources,
-        "disclaimer": "The score is an automated estimate, not absolute ground truth."
+        "disclaimer": (
+            "The score is an automated estimate, not absolute ground truth. "
+            "Web-search assessments are AI-generated and are not published fact-checks."
+        )
     }

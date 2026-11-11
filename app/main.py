@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.core.pipeline import pipeline
+from app.core.local_web_search import get_local_model_status
 from app.core.preprocessing import extract_text_from_video
 from app.webhook.meta_whatsapp import (
     META_APP_SECRET,
@@ -20,6 +21,7 @@ from app.webhook.meta_whatsapp import (
     verify_meta_webhook,
 )
 from app.core.fact_check_search import fact_check_engine
+from app.core.fever_benchmark import get_fever_status, search_fever_claims
 
 logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
@@ -95,17 +97,19 @@ async def verify_claim_endpoint(
 
 @app.get("/api/integrations-status")
 async def integrations_status():
-    """Reports enabled evidence sources without exposing API credentials."""
+    """Reports local search/model readiness without exposing credentials."""
+    local_model_status = get_local_model_status()
     return {
         "local_fact_check_records": len(fact_check_engine.fact_checks),
-        "google_fact_check_configured": bool(
-            os.getenv("GOOGLE_FACT_CHECK_API_KEY")
-        ),
-        "google_fact_check_provider": "Google Fact Check Tools API",
+        "web_search_provider": "Bing public search page with Wikipedia fallback",
+        "web_search_requires_api_key": False,
+        "local_model_provider": "Ollama",
+        "local_model_available": local_model_status["available"],
+        "local_model": local_model_status["model"],
+        "local_model_message": local_model_status["message"],
         "note": (
-            "Configured means a key is present, not that Google accepted it. "
-            "A verification response reports the latest lookup status. "
-            "The API searches published fact checks, not the entire web."
+            "Bing search results are retrieved without an API key; verdicts are "
+            "generated locally by Ollama. Published local fact-check records take precedence."
         )
     }
 
@@ -145,6 +149,33 @@ async def get_fact_checks(
             filtered.append(item)
 
     return {"total": len(filtered), "data": filtered}
+
+@app.get("/api/benchmark/status")
+async def fever_benchmark_status():
+    """Reports availability of the separate FEVER research benchmark."""
+    return get_fever_status()
+
+@app.get("/api/benchmark/search")
+async def search_fever_benchmark(
+    q: str = Query(..., min_length=2, max_length=200),
+    limit: int = Query(10, ge=1, le=20)
+):
+    """Searches FEVER benchmark claims without using their labels for live verdicts."""
+    status = get_fever_status()
+    if not status["available"]:
+        return JSONResponse(
+            status_code=503,
+            content={"error": status["note"], "data": []}
+        )
+    results = search_fever_claims(q, limit=limit)
+    return {
+        "query": q,
+        "dataset": status["dataset"],
+        "attribution": status["attribution"],
+        "warning": "Research benchmark labels are not published fact-check verdicts.",
+        "total": len(results),
+        "data": results,
+    }
 
 @app.get("/api/analytics")
 async def get_analytics():
@@ -199,12 +230,13 @@ async def get_viva_info():
 
     return {
         "title": "WhatsApp Misinformation Claim Verification System",
-        "core_design_decision": "Style classifiers learn writing style rather than truth and fail on real WhatsApp forwards. We use a multi-signal claim verification pipeline where the classifier is one signal among four.",
+        "core_design_decision": "Style classifiers learn writing style rather than truth and fail on real WhatsApp forwards. Published local fact-checks take precedence; public Bing results plus a local Ollama model provide an optional cited assessment.",
         "architecture_modules": [
-            "Signal 1: Fact-Check DB Lookup (Google Fact Check Tools API + ClaimReview schema)",
+            "Signal 1: Fact-check lookup against the bundled local ClaimReview database",
             "Signal 2: Semantic Vector Search (TF-IDF + Cosine Similarity over Indian & Global DB)",
-            "Signal 3: Linguistic Style & Sensationalism Classifier (ALL CAPS, forwarding pressure, urgency)",
-            "Signal 4: Source & Evidence Retrieval with URL Domain Authority Score",
+            "Signal 3: Public Bing web search and local Ollama assessment with source links",
+            "Signal 4: Linguistic Style & Sensationalism Classifier (ALL CAPS, forwarding pressure, urgency)",
+            "Source citations are displayed but domain authority is not independently scored",
             "Preprocessing: Language Detection (langdetect for Hindi/Bengali/English) & Image OCR Text Extraction"
         ],
         "evaluation_metrics": metrics_data.get("pipeline_in_domain_metrics", {}),
@@ -214,6 +246,7 @@ async def get_viva_info():
             "Unverified is a legitimate & expected output when a claim is brand-new and has no published fact-checks yet.",
             "Satire, opinion pieces, and nuanced half-truths cannot be forcibly fit into a strict binary label.",
             "Confidence score (0-100%) represents an automated statistical estimate, not absolute ground truth.",
+            "Bing search and Ollama assessments are AI-generated and are not published fact-checks; Bing results may be blocked or change format.",
             "Code-mixed regional scripts (e.g., Hinglish written in Latin script) require continuous vocabulary updates."
         ]
     }

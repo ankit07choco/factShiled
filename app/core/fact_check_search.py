@@ -187,7 +187,7 @@ class FactCheckSearchEngine:
         if not api_key:
             return [], {
                 "status": "not_configured",
-                "message": "External fact-check search is off. Configure GOOGLE_FACT_CHECK_API_KEY to enable it."
+                "message": "Google Fact Check API is not used in local-only mode; local records were checked."
             }
 
         params = {

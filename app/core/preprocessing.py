@@ -126,7 +126,7 @@ def extract_text_from_image(image_bytes: bytes) -> dict:
 
 def extract_text_from_video(video_bytes: bytes, max_frames: int = 8) -> dict:
     """Extracts visible text from sampled video frames using FFmpeg and image OCR."""
-    ffmpeg = shutil.which(os.getenv("FFMPEG_PATH", "ffmpeg"))
+    ffmpeg = shutil.which(os.getenv("FFMPEG_PATH") or "ffmpeg")
     if not ffmpeg:
         return {
             "success": False,

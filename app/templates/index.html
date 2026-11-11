@@ -129,7 +129,7 @@
                   <div class="d-flex justify-content-between small"><span>Writing style (20%)</span><span id="signalStyleScore">0%</span></div>
                   <div class="d-flex justify-content-between small"><span>Source evidence (15%)</span><span id="signalEvidScore">0%</span></div>
                 </div>
-                <h6 class="fw-bold text-muted small text-uppercase mb-2">Sources</h6>
+                <h6 class="fw-bold text-muted small text-uppercase mb-2">Sources &amp; citations</h6>
                 <div id="sourcesList" class="small text-muted mb-3">No direct source.</div>
                 <div id="mediaNotice" class="small text-warning"></div>
               </div>
@@ -189,6 +189,23 @@
             </table>
           </div>
         </div>
+        <div class="card card-custom p-4 mt-4">
+          <h5 class="fw-bold text-info mb-2">FEVER research benchmark</h5>
+          <p class="small text-muted mb-3">A separate research dataset of Wikipedia-derived claims. Its labels are benchmark annotations, not published fact-checks, and are never used to determine live verification verdicts.</p>
+          <div id="benchmarkStatus" class="alert alert-secondary small" role="status">Checking benchmark database...</div>
+          <form id="benchmarkSearchForm" class="d-flex flex-wrap gap-2 mb-3">
+            <label class="visually-hidden" for="benchmarkSearchInput">Search benchmark claims</label>
+            <input type="search" id="benchmarkSearchInput" class="form-control form-control-sm bg-dark text-light border-secondary flex-grow-1" placeholder="Search benchmark claims..." minlength="2" maxlength="200" required>
+            <button type="submit" class="btn btn-outline-info btn-sm" id="benchmarkSearchButton">Search benchmark</button>
+          </form>
+          <div id="benchmarkError" class="alert alert-danger d-none small" role="alert"></div>
+          <div class="table-responsive">
+            <table class="table table-dark table-hover border-secondary align-middle small">
+              <thead><tr><th>Claim</th><th>FEVER label</th><th>Evidence articles</th></tr></thead>
+              <tbody id="benchmarkTableBody"><tr><td colspan="3" class="text-center text-muted">Search to view benchmark records.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section class="tab-pane fade" id="analytics-pane" role="tabpanel" aria-labelledby="analytics-tab">
@@ -214,6 +231,6 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-  <script src="/static/js/app.js?v=2"></script>
+  <script src="/static/js/app.js?v=3"></script>
 </body>
 </html>
