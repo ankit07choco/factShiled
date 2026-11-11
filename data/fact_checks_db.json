@@ -99,6 +99,7 @@
     "id": "FC-007",
     "claim": "ISRO launched Chandrayaan-3 mission successfully landing on the lunar south pole.",
     "claim_hi": "इसरो ने चंद्रमा के दक्षिणी ध्रुव पर सफलतापूर्वक उतरते हुए चंद्रयान-3 मिशन लॉन्च किया।",
+    "claim_bn": "চন্দ্রযান-৩ ২০২৩ সালের ২৩ আগস্ট চাঁদে সফলভাবে অবতরণ করেছিল।",
     "verdict": "True",
     "confidence_rating": "Likely True",
     "category": "Science & Space",
@@ -108,8 +109,21 @@
     "rating": "TRUE",
     "url": "https://www.isro.gov.in/Chandrayaan3.html",
     "fact_check_date": "2023-08-23",
+    "event_date": "2023-08-23",
     "summary": "ISRO successfully landed Chandrayaan-3 on the lunar south pole on August 23, 2023, making India the first nation to achieve a soft landing in that region.",
-    "keywords": ["isro", "chandrayaan-3", "lunar south pole", "moon landing", "space"]
+    "keywords": [
+      "isro",
+      "chandrayaan-3",
+      "lunar south pole",
+      "moon landing",
+      "space",
+      "চন্দ্রযান-৩",
+      "২০২৩",
+      "২৩ আগস্ট",
+      "চাঁদে",
+      "সফলভাবে",
+      "অবতরণ"
+    ]
   },
   {
     "id": "FC-008",
@@ -126,5 +140,39 @@
     "fact_check_date": "2024-01-15",
     "summary": "ইউনেস্কো এমন কোনো ঘোষণা দেয়নি। এই মেসেজটি একটি পুরনো ইন্টারনেট গুজব।",
     "keywords": ["unesco", "national anthem", "jana gana mana", "bengali"]
+  },
+  {
+    "id": "FC-009",
+    "claim": "Venus takes longer to spin once on its axis than to go around the Sun. One Venus rotation takes 243 Earth days, while one orbit around the Sun takes 225 Earth days.",
+    "claim_hi": "शुक्र को अपनी धुरी पर एक बार घूमने में सूर्य की परिक्रमा करने से अधिक समय लगता है।",
+    "verdict": "True",
+    "confidence_rating": "Likely True",
+    "category": "Science & Space",
+    "language": "en",
+    "source_name": "NASA",
+    "publisher": "NASA",
+    "rating": "TRUE",
+    "url": "https://science.nasa.gov/venus/venus-facts/",
+    "fact_check_date": "2026-11-10",
+    "summary": "NASA states that a day on Venus lasts 243 Earth days, longer than its Venus year, which takes 225 Earth days to orbit the Sun.",
+    "keywords": [
+      "venus",
+      "rotation",
+      "spin",
+      "rotate",
+      "axis",
+      "day",
+      "sidereal day",
+      "venus day",
+      "solar day",
+      "orbit",
+      "revolution",
+      "year",
+      "earth days",
+      "243",
+      "225",
+      "longer day than year",
+      "NASA"
+    ]
   }
 ]

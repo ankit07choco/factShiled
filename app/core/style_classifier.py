@@ -1,5 +1,6 @@
 import re
 import os
+import logging
 import joblib
 from typing import Dict, Any
 
@@ -29,6 +30,7 @@ AUTHORITY_INVOCATIONS = [
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'style_model.joblib')
 VEC_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'style_vectorizer.joblib')
+logger = logging.getLogger(__name__)
 
 class StyleClassifier:
     """
@@ -51,6 +53,7 @@ class StyleClassifier:
                 self.model = joblib.load(MODEL_PATH)
                 self.vectorizer = joblib.load(VEC_PATH)
         except Exception:
+            logger.exception("Could not load the style classifier; using linguistic heuristics.")
             self.model = None
             self.vectorizer = None
 

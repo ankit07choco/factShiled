@@ -1,12 +1,20 @@
 import unittest
 import json
+from types import SimpleNamespace
 from io import BytesIO
 from unittest.mock import patch
 from PIL import Image
-from app.core.preprocessing import detect_language, extract_urls, clean_text, extract_text_from_image
+from app.core.preprocessing import (
+    detect_language,
+    extract_urls,
+    clean_text,
+    extract_text_from_image,
+    extract_text_from_video,
+)
 from app.core.claim_extraction import extract_claims
 from app.core.style_classifier import style_classifier
 from app.core.fact_check_search import fact_check_engine
+from app.core.openai_search import search_and_assess_claim
 from app.core.scoring import compute_verdict_and_score
 from app.core.pipeline import pipeline
 from app.webhook.meta_whatsapp import (
@@ -17,6 +25,14 @@ from app.webhook.meta_whatsapp import (
 )
 
 class TestFactShieldPipeline(unittest.TestCase):
+
+    def setUp(self):
+        patcher = patch("app.core.fact_check_search.GOOGLE_FACT_CHECK_API_KEY", "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        openai_search_patcher = patch("app.core.openai_search.OPENAI_API_KEY", "")
+        openai_search_patcher.start()
+        self.addCleanup(openai_search_patcher.stop)
 
     def test_preprocessing_language_and_urls(self):
         text_en = "UNESCO has declared the Indian National Anthem as the best in the world. https://factcheck.org"
@@ -61,12 +77,272 @@ class TestFactShieldPipeline(unittest.TestCase):
         self.assertEqual(result["extracted_text"], "")
         self.assertIn("No readable text", result["error"])
 
+    def test_image_ocr_reports_how_to_configure_missing_tesseract(self):
+        import pytesseract
+
+        image_buffer = BytesIO()
+        Image.new("RGB", (4, 4), "white").save(image_buffer, format="PNG")
+        with patch(
+            "pytesseract.image_to_string",
+            side_effect=pytesseract.pytesseract.TesseractNotFoundError()
+        ):
+            result = extract_text_from_image(image_buffer.getvalue())
+        self.assertFalse(result["success"])
+        self.assertIn("TESSERACT_CMD", result["error"])
+        self.assertIn("tesseract.exe", result["error"])
+
+    def test_image_ocr_finds_default_windows_tesseract_installation(self):
+        import pytesseract
+
+        image_buffer = BytesIO()
+        Image.new("RGB", (4, 4), "white").save(image_buffer, format="PNG")
+        default_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        with (
+            patch.dict("os.environ", {"TESSERACT_CMD": ""}),
+            patch("shutil.which", return_value=None),
+            patch("os.path.isfile", return_value=True),
+            patch("pytesseract.image_to_string", return_value="Recognized text"),
+            patch.object(pytesseract.pytesseract, "tesseract_cmd", "tesseract"),
+        ):
+            result = extract_text_from_image(image_buffer.getvalue())
+            self.assertEqual(pytesseract.pytesseract.tesseract_cmd, default_path)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["extracted_text"], "Recognized text")
+
     def test_fact_check_search(self):
         matches = fact_check_engine.find_matches("UNESCO declared Jana Gana Mana best national anthem")
         self.assertTrue(matches["has_match"])
         top = matches["top_match"]
         self.assertEqual(top["id"], "FC-001")
         self.assertEqual(top["verdict"], "False")
+
+    def test_local_search_discards_zero_similarity_records(self):
+        matches = fact_check_engine.find_matches(
+            "A newly discovered comet will pass Earth next month.",
+            api_key=""
+        )
+        self.assertFalse(matches["has_match"])
+        self.assertIsNone(matches["top_match"])
+        self.assertEqual(matches["external_lookup"]["status"], "not_configured")
+
+    def test_google_fact_check_api_parses_rating_and_language(self):
+        payload = {
+            "claims": [{
+                "text": "The claim that water boils at 100 degrees Celsius at sea level.",
+                "claimReview": [{
+                    "textualRating": "Mostly True",
+                    "publisher": {"name": "Example Fact Check"},
+                    "url": "https://example.test/review",
+                    "reviewDate": "2026-01-01T00:00:00Z",
+                    "languageCode": "en"
+                }]
+            }]
+        }
+        with patch(
+            "app.core.fact_check_search.requests.get",
+            return_value=SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: payload
+            )
+        ) as get:
+            matches = fact_check_engine.find_matches(
+                "The claim that water boils at 100 degrees Celsius at sea level.",
+                api_key="test-key",
+                language_code="en"
+            )
+
+        self.assertTrue(matches["has_match"])
+        self.assertEqual(matches["top_match"]["verdict"], "True")
+        self.assertEqual(matches["top_match"]["publisher"], "Example Fact Check")
+        self.assertEqual(matches["external_lookup"]["status"], "success")
+        self.assertEqual(get.call_args.kwargs["params"]["languageCode"], "en")
+        self.assertEqual(get.call_args.kwargs["timeout"], 8)
+
+    def test_google_api_unrelated_results_do_not_create_verdict(self):
+        payload = {
+            "claims": [{
+                "text": "A local football team won their match on Saturday.",
+                "claimReview": [{
+                    "textualRating": "True",
+                    "publisher": {"name": "Example"},
+                    "url": "https://example.test/review"
+                }]
+            }]
+        }
+        with patch(
+            "app.core.fact_check_search.requests.get",
+            return_value=SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: payload
+            )
+        ):
+            matches = fact_check_engine.find_matches(
+                "The moon is made of green cheese.",
+                api_key="test-key"
+            )
+
+        self.assertFalse(matches["has_match"])
+        self.assertIsNone(matches["top_match"])
+        self.assertEqual(matches["external_lookup"]["status"], "success")
+
+    def test_openai_web_search_assessment_returns_grounded_verdict_and_citations(self):
+        payload = {
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": '{"verdict":"Likely True","explanation":"The sources confirm it."}',
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url": "https://example.test/review",
+                        "title": "Example review"
+                    }]
+                }]
+            }]
+        }
+        with patch(
+            "app.core.openai_search.requests.post",
+            return_value=SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: payload
+            )
+        ) as post:
+            result = search_and_assess_claim("A verifiable claim", api_key="test-key")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["verdict"], "Likely True")
+        self.assertEqual(result["sources"][0]["url"], "https://example.test/review")
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Authorization"],
+            "Bearer test-key"
+        )
+        self.assertEqual(
+            post.call_args.kwargs["json"]["tools"],
+            [{"type": "web_search", "search_context_size": "high"}]
+        )
+        self.assertEqual(post.call_args.kwargs["json"]["tool_choice"], "required")
+        self.assertEqual(post.call_args.kwargs["timeout"], 30)
+        self.assertIn(
+            "rather than defaulting to Unverified",
+            post.call_args.kwargs["json"]["input"]
+        )
+
+    def test_openai_web_search_does_not_call_api_without_key(self):
+        with patch("app.core.openai_search.requests.post") as post:
+            result = search_and_assess_claim("A claim", api_key="")
+
+        self.assertEqual(result["status"], "not_configured")
+        post.assert_not_called()
+
+    def test_openai_web_search_does_not_use_uncited_verdict(self):
+        payload = {
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": '{"verdict":"Likely False","explanation":"No sources."}',
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url": "javascript:alert(1)",
+                        "title": "Unsafe link"
+                    }]
+                }]
+            }]
+        }
+        with patch(
+            "app.core.openai_search.requests.post",
+            return_value=SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: payload
+            )
+        ):
+            result = search_and_assess_claim("A claim", api_key="test-key")
+
+        self.assertEqual(result["status"], "no_grounded_sources")
+        self.assertEqual(result["verdict"], "Unverified")
+        self.assertEqual(result["sources"], [])
+
+    def test_openai_web_search_can_assess_claim_without_local_review(self):
+        assessment = {
+            "status": "success",
+            "message": "OpenAI web search assessment cites 1 source.",
+            "verdict": "Likely False",
+            "explanation": "The cited source contradicts the claim.",
+            "sources": [{
+                "title": "Example review",
+                "url": "https://example.test/review",
+                "publisher": "OpenAI web search result",
+                "source_type": "Web search"
+            }]
+        }
+        with patch(
+            "app.core.pipeline.search_and_assess_claim",
+            return_value=assessment
+        ):
+            result = pipeline.verify(
+                text="A newly discovered purple comet orbits the fictional planet Zorblax."
+            )
+
+        self.assertEqual(result["verdict"], "Likely False")
+        self.assertIn("AI assessment grounded in Bing search", result["explanation"])
+        self.assertEqual(result["sources"][0]["source_type"], "Web search")
+
+    def test_published_fact_check_takes_precedence_over_openai_web_search(self):
+        assessment = {
+            "status": "success",
+            "message": "Search completed.",
+            "verdict": "Likely False",
+            "explanation": "Contradictory search assessment.",
+            "sources": [{
+                "title": "Example",
+                "url": "https://example.test/",
+                "publisher": "OpenAI web search result",
+                "source_type": "Web search"
+            }]
+        }
+        with patch(
+            "app.core.pipeline.search_and_assess_claim",
+            return_value=assessment
+        ):
+            result = pipeline.verify(
+                text="Chandrayaan-3 landed on the Moon on 23 August 2023."
+            )
+
+        self.assertEqual(result["verdict"], "Likely True")
+        self.assertEqual(result["sources"][0]["source_type"], "Published fact-check")
+
+    def test_google_fact_check_api_errors_are_reported(self):
+        import requests
+        with patch(
+            "app.core.fact_check_search.requests.get",
+            side_effect=requests.Timeout()
+        ):
+            matches = fact_check_engine.find_matches(
+                "A well-formed factual claim",
+                api_key="test-key"
+            )
+        self.assertEqual(matches["external_lookup"]["status"], "error")
+        self.assertIsNotNone(matches["external_lookup"]["message"])
+
+    def test_google_api_http_errors_give_actionable_diagnostics_without_key(self):
+        import requests
+
+        response = SimpleNamespace(status_code=403)
+        error = requests.HTTPError(response=response)
+        with patch(
+            "app.core.fact_check_search.requests.get",
+            side_effect=error
+        ):
+            matches = fact_check_engine.find_matches(
+                "A well-formed factual claim",
+                api_key="private-test-key"
+            )
+
+        lookup = matches["external_lookup"]
+        self.assertEqual(lookup["status"], "error")
+        self.assertEqual(lookup["http_status"], 403)
+        self.assertIn("API is enabled", lookup["message"])
+        self.assertNotIn("private-test-key", lookup["message"])
 
     def test_full_pipeline_verification(self):
         # 1. Known false claim
@@ -85,6 +361,47 @@ class TestFactShieldPipeline(unittest.TestCase):
         result_novel = pipeline.verify(text="Local library in Springfield added 20 new books yesterday.")
         self.assertEqual(result_novel["verdict"], "Unverified")
 
+    def test_venus_rotation_fact_is_verified_true(self):
+        claim = "Fun fact: Venus takes longer to spin once on its axis than to go around the Sun."
+        matches = fact_check_engine.find_matches(claim)
+        self.assertTrue(matches["has_match"])
+        self.assertEqual(matches["top_match"]["id"], "FC-009")
+
+        result = pipeline.verify(text=claim)
+        self.assertEqual(result["verdict"], "Likely True")
+        self.assertGreaterEqual(result["confidence_score"], 70)
+        self.assertIn("NASA", result["explanation"])
+        self.assertEqual(result["sources"][0]["url"], "https://science.nasa.gov/venus/venus-facts/")
+
+    def test_bengali_chandrayaan_landing_claim_is_verified_true(self):
+        claim = "চন্দ্রযান-৩ ২০২৩ সালের ২৩ আগস্ট চাঁদে সফলভাবে অবতরণ করেছিল।"
+        matches = fact_check_engine.find_matches(claim)
+        self.assertTrue(matches["has_match"])
+        self.assertEqual(matches["top_match"]["id"], "FC-007")
+
+        result = pipeline.verify(text=claim)
+        self.assertEqual(result["verdict"], "Likely True")
+        self.assertGreaterEqual(result["confidence_score"], 70)
+        self.assertIn("ISRO", result["explanation"])
+
+    def test_chandrayaan_landing_date_conflict_is_likely_false(self):
+        result = pipeline.verify(
+            text="Chandrayaan-3 landed on the Moon on 24 August 2023."
+        )
+        self.assertEqual(result["verdict"], "Likely False")
+        self.assertIn("2023-08-24", result["explanation"])
+        self.assertIn("2023-08-23", result["explanation"])
+        self.assertEqual(
+            result["sources"][0]["url"],
+            "https://www.isro.gov.in/Chandrayaan3.html"
+        )
+
+    def test_chandrayaan_correct_landing_date_remains_likely_true(self):
+        result = pipeline.verify(
+            text="Chandrayaan-3 landed on the Moon on 23 August 2023."
+        )
+        self.assertEqual(result["verdict"], "Likely True")
+
     def test_meta_webhook(self):
         # Test verification handshake
         with patch("app.webhook.meta_whatsapp.WEBHOOK_VERIFY_TOKEN", "test-token"):
@@ -94,6 +411,8 @@ class TestFactShieldPipeline(unittest.TestCase):
 
         # Test invalid token handshake
         self.assertIsNone(bad)
+        with patch("app.webhook.meta_whatsapp.WEBHOOK_VERIFY_TOKEN", ""):
+            self.assertIsNone(verify_meta_webhook("subscribe", None, "123456789"))
 
         # Test simulated payload processing
         test_payload = {
@@ -146,6 +465,16 @@ class TestFactShieldPipeline(unittest.TestCase):
             )
         self.assertTrue(response["success"])
         self.assertIn("FFmpeg", response["reply_text"])
+
+    def test_blank_ffmpeg_path_uses_default_executable_name(self):
+        with (
+            patch.dict("os.environ", {"FFMPEG_PATH": ""}),
+            patch("app.core.preprocessing.shutil.which", return_value=None) as which,
+        ):
+            result = extract_text_from_video(b"video-bytes")
+
+        self.assertFalse(result["success"])
+        which.assert_called_once_with("ffmpeg")
 
     def test_whatsapp_send_uses_bearer_token(self):
         class FakeResponse:

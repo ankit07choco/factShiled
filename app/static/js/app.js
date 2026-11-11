@@ -121,19 +121,21 @@ function renderVerificationResults(data) {
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       link.className = "text-info text-decoration-none";
-      link.textContent = `${source.publisher || "Source"}: ${source.title || source.url}`;
+      link.textContent = `${source.source_type || source.publisher || "Source"}: ${source.title || source.url}`;
       item.append(link);
       list.append(item);
     });
     sources.append(list);
   } else {
-    sources.textContent = "No published fact-check source registered.";
+    sources.textContent = "No citable source was returned.";
   }
 
   const mediaNotice = document.getElementById("mediaNotice");
   const videoResult = data.video_result;
   const notices = [];
   if (data.ocr_result?.error && data.input_text) notices.push(data.ocr_result.error);
+  if (data.fact_check_lookup?.message) notices.push(data.fact_check_lookup.message);
+  if (data.web_search?.message) notices.push(data.web_search.message);
   if (videoResult) {
     notices.push(videoResult.error || "Sampled on-screen text was analyzed.");
     notices.push("Video speech is not transcribed.");
@@ -225,6 +227,64 @@ async function loadFactChecks() {
   } catch (error) {
     showError("dbError", error.message);
     tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Could not load fact checks.</td></tr>';
+  }
+  await loadBenchmarkStatus();
+}
+
+async function loadBenchmarkStatus() {
+  const statusBox = document.getElementById("benchmarkStatus");
+  try {
+    const status = await fetchJson("/api/benchmark/status");
+    statusBox.textContent = status.available
+      ? `${status.record_count.toLocaleString()} FEVER research claims are available. These are dataset annotations, not published fact-checks. ${status.attribution} License: ${status.license}.`
+      : `FEVER benchmark is not imported. Run: .venv/bin/python scripts/import_fever_benchmark.py. The download is approximately 33 MB.`;
+    statusBox.className = `alert ${status.available ? "alert-info" : "alert-warning"} small`;
+  } catch (error) {
+    statusBox.textContent = `Could not check the FEVER benchmark: ${error.message}`;
+    statusBox.className = "alert alert-danger small";
+  }
+}
+
+async function searchBenchmark(event) {
+  event.preventDefault();
+  const input = document.getElementById("benchmarkSearchInput");
+  const tbody = document.getElementById("benchmarkTableBody");
+  const button = document.getElementById("benchmarkSearchButton");
+  hideError("benchmarkError");
+  button.disabled = true;
+  try {
+    const params = new URLSearchParams({ q: input.value.trim(), limit: "10" });
+    const result = await fetchJson(`/api/benchmark/search?${params}`);
+    tbody.replaceChildren();
+    if (!result.data.length) {
+      const row = tbody.insertRow();
+      const cell = row.insertCell();
+      cell.colSpan = 3;
+      cell.className = "text-center text-muted";
+      cell.textContent = "No matching benchmark records.";
+      return;
+    }
+    result.data.forEach(record => {
+      const row = tbody.insertRow();
+      row.insertCell().textContent = record.claim;
+      const labelCell = row.insertCell();
+      labelCell.textContent = record.label;
+      const evidenceCell = row.insertCell();
+      record.evidence_articles.forEach((article, index) => {
+        if (index) evidenceCell.append(document.createTextNode(", "));
+        const link = document.createElement("a");
+        link.href = article.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = article.title;
+        evidenceCell.append(link);
+      });
+      if (!record.evidence_articles.length) evidenceCell.textContent = "No evidence article recorded";
+    });
+  } catch (error) {
+    showError("benchmarkError", error.message);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -414,6 +474,22 @@ async function loadWhatsAppStatus() {
   }
 }
 
+async function loadFactCheckApiStatus() {
+  const statusBox = document.getElementById("factCheckApiStatus");
+  try {
+    const status = await fetchJson("/api/integrations-status");
+    statusBox.textContent =
+      `Bing web search requires no API key. ${status.local_fact_check_records} local published fact-check records are available. ` +
+      `${status.local_model_provider} (${status.local_model}): ${status.local_model_message}`;
+    statusBox.className = status.local_model_available
+      ? "alert alert-info mt-3 small"
+      : "alert alert-warning mt-3 small";
+  } catch (error) {
+    statusBox.textContent = `Could not check external fact-check service: ${error.message}`;
+    statusBox.className = "alert alert-danger mt-3 small";
+  }
+}
+
 document.getElementById("verifyForm").addEventListener("submit", submitVerification);
 document.getElementById("simSendBtn").addEventListener("click", sendSimulatedMsg);
 document.getElementById("simInput").addEventListener("keydown", event => {
@@ -421,6 +497,7 @@ document.getElementById("simInput").addEventListener("keydown", event => {
 });
 document.getElementById("dbSearchInput").addEventListener("input", filterFactChecks);
 document.getElementById("dbCatFilter").addEventListener("change", filterFactChecks);
+document.getElementById("benchmarkSearchForm").addEventListener("submit", searchBenchmark);
 document.querySelectorAll('#mainTab button[data-bs-toggle="tab"]').forEach(button => {
   button.addEventListener("shown.bs.tab", event => {
     if (event.target.id === "db-tab") loadFactChecks();
@@ -429,3 +506,4 @@ document.querySelectorAll('#mainTab button[data-bs-toggle="tab"]').forEach(butto
   });
 });
 loadWhatsAppStatus();
+loadFactCheckApiStatus();

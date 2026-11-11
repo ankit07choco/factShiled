@@ -24,6 +24,16 @@ def test_verify_endpoint_text():
     assert "BOOM" in data["explanation"]
     print("✅ POST /api/verify correctly classified false claim with explanation")
 
+def test_verify_bengali_chandrayaan_claim():
+    claim = "চন্দ্রযান-৩ ২০২৩ সালের ২৩ আগস্ট চাঁদে সফলভাবে অবতরণ করেছিল।"
+    resp = client.post("/api/verify", data={"text": claim})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["verdict"] == "Likely True"
+    assert data["confidence_score"] >= 70
+    assert "ISRO" in data["explanation"]
+    assert data["sources"][0]["url"] == "https://www.isro.gov.in/Chandrayaan3.html"
+
 def test_fact_checks_api():
     resp = client.get("/api/fact-checks?query=garlic")
     assert resp.status_code == 200
@@ -47,6 +57,68 @@ def test_viva_api():
     assert "evaluation_metrics" in data
     assert "limitations" in data
     print("✅ GET /api/viva-info returns viva defense metrics")
+
+def test_viva_api_does_not_invent_perfect_metrics_when_file_missing():
+    with patch("app.main.os.path.exists", return_value=False):
+        resp = client.get("/api/viva-info")
+    assert resp.status_code == 200
+    assert resp.json()["evaluation_metrics"] == {}
+
+def test_integrations_status_reports_local_model_without_api_keys():
+    with patch(
+        "app.main.get_local_model_status",
+        return_value={
+            "available": True,
+            "model": "qwen3:4b",
+            "message": "Local model is ready.",
+        },
+    ):
+        resp = client.get("/api/integrations-status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["web_search_requires_api_key"] is False
+    assert data["web_search_provider"] == "Bing public search page with Wikipedia fallback"
+    assert data["local_model_provider"] == "Ollama"
+    assert data["local_model_available"] is True
+    assert data["local_fact_check_records"] >= 1
+    assert "api_key" not in data
+
+def test_fever_benchmark_endpoints_keep_research_labels_separate():
+    status = {
+        "available": True,
+        "record_count": 145449,
+        "dataset": "FEVER v1.0 training split",
+        "attribution": "FEVER dataset authors",
+        "license": "CC BY-SA 3.0",
+        "license_url": "https://fever.ai/download/fever/license.html",
+        "source_url": "https://fever.ai/download/fever/train.jsonl",
+        "note": "Research benchmark only",
+    }
+    results = [{
+        "id": 62037,
+        "claim": "Oliver Reed was a film actor.",
+        "label": "SUPPORTS",
+        "dataset": "FEVER v1.0 research benchmark",
+        "evidence_articles": [{
+            "title": "Oliver Reed",
+            "url": "https://en.wikipedia.org/wiki/Oliver_Reed",
+        }],
+    }]
+    with patch("app.main.get_fever_status", return_value=status), \
+         patch("app.main.search_fever_claims", return_value=results):
+        status_response = client.get("/api/benchmark/status")
+        search_response = client.get(
+            "/api/benchmark/search",
+            params={"q": "Oliver Reed actor"}
+        )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["record_count"] >= 100000
+    assert search_response.status_code == 200
+    data = search_response.json()
+    assert "not published fact-check verdicts" in data["warning"]
+    assert data["data"][0]["label"] == "SUPPORTS"
+    assert data["attribution"] == "FEVER dataset authors"
 
 def test_whatsapp_status_does_not_expose_credentials():
     resp = client.get("/api/whatsapp-status")

@@ -3,6 +3,7 @@ from app.core.preprocessing import detect_language, extract_urls, clean_text, ex
 from app.core.claim_extraction import extract_claims
 from app.core.style_classifier import style_classifier
 from app.core.fact_check_search import fact_check_engine
+from app.core.local_web_search import search_and_assess_claim
 from app.core.scoring import compute_verdict_and_score
 
 class VerificationPipeline:
@@ -12,8 +13,7 @@ class VerificationPipeline:
     def verify(
         self,
         text: Optional[str] = None,
-        image_bytes: Optional[bytes] = None,
-        api_key: Optional[str] = None
+        image_bytes: Optional[bytes] = None
     ) -> Dict[str, Any]:
         """
         Runs the end-to-end verification pipeline on text or image WhatsApp forwards.
@@ -49,7 +49,12 @@ class VerificationPipeline:
 
         # Step 3: Multi-signal evaluation
         # Signal 1 & 2: Fact-Check API & Semantic vector DB search
-        fact_check_result = fact_check_engine.find_matches(primary_claim, api_key=api_key)
+        fact_check_result = fact_check_engine.find_matches(
+            primary_claim,
+            api_key="",
+            language_code=lang_info["code"]
+        )
+        web_search_result = search_and_assess_claim(primary_claim)
 
         # Signal 3: Style & Sensationalism classifier
         style_features = style_classifier.extract_features(input_text)
@@ -57,6 +62,7 @@ class VerificationPipeline:
         # Step 4: Scoring Engine
         verdict_data = compute_verdict_and_score(
             fact_check_result=fact_check_result,
+            web_search_result=web_search_result,
             style_features=style_features,
             claim_text=primary_claim,
             urls=urls
@@ -84,6 +90,8 @@ class VerificationPipeline:
             "explanation": verdict_data["explanation"],
             "signals": verdict_data["signals"],
             "sources": verdict_data["sources"],
+            "fact_check_lookup": fact_check_result["external_lookup"],
+            "web_search": web_search_result,
             "whatsapp_reply": whatsapp_reply,
             "disclaimer": verdict_data["disclaimer"]
         }
@@ -128,9 +136,10 @@ class VerificationPipeline:
 
         if sources:
             lines.append("")
-            lines.append("🔗 *Verified Sources:*")
+            lines.append("🔗 *Sources consulted:*")
             for s in sources:
-                lines.append(f"• {s['publisher']}: {s['url']}")
+                source_type = s.get("source_type", "Published fact-check")
+                lines.append(f"• {source_type} — {s['publisher']}: {s['url']}")
 
         lines.append("")
         lines.append("⚠️ _Note: Automated estimate, not absolute truth. Always verify with official news outlets._")

@@ -16,9 +16,9 @@ WhatsApp user → Meta Cloud API → FastAPI Webhook
         Claim extraction (pick checkable proposition(s))
                                      ↓
    ┌──────────────┬────────────────────┬──────────────────┐
-   Fact-check API   Semantic search      Style classifier
-   (Google Fact     (embeddings / TF-IDF (Sensationalism,
-   Check Tools)     over fact-check DB)  ALL CAPS, urgency)
+   Local fact-check Web search          Semantic search      Style classifier
+   (published       (Bing page,         (TF-IDF over         (Sensationalism,
+   reviews)         cited AI assessment) fact-check DB)      ALL CAPS, urgency)
    └──────────────┴────────────────────┴──────────────────┘
                                      ↓
               Scoring Engine → Verdict + Explanation + Sources
@@ -34,10 +34,13 @@ WhatsApp user → Meta Cloud API → FastAPI Webhook
 > A model trained purely on LIAR or ISOT learns *writing style*, not *factual truth*. Such models collapse when tested on real WhatsApp forwards which frequently combine sensational headings with real news, or colloquial Indian languages (Hinglish, Bengali, Tamil).
 >
 > In FactShield AI:
-> 1. **Fact-check DB lookup (40% weight):** Matches against verified debunking claims (ClaimReview schema).
-> 2. **Semantic search (25% weight):** Vector similarity search over indexed Indian & global fact-checks.
-> 3. **Linguistic style classifier (20% weight):** Flags ALL CAPS, urgency keywords, forwarding pressure ("forward to 10 groups"), and authority hijacking ("UNESCO", "NASA").
-> 4. **Evidence & domain authority (15% weight):** Checks URL credibility and news corroboration.
+> 1. **Fact-check retrieval:** Looks for relevant published fact-check records in the bundled local database.
+> 2. **Local text search:** TF-IDF similarity over the small bundled fact-check database (not a general web or knowledge search).
+> 3. **Web search:** Fetches public Bing search results without an API key; a local Ollama model assesses the snippets and returns linked sources when no local fact-check matches. This is not an independent fact-check or a guarantee of truth.
+> 4. **Style heuristics/classifier:** Flags ALL CAPS, urgency keywords, forwarding pressure, and sensational wording; style alone does not establish truth.
+> 5. **Source links:** Displays fact-check and web-search citations; it does not independently verify domain authority or corroborate every URL.
+>
+> The UI exposes signal weights for explanation, but verdicts are currently rule-based: a sufficiently relevant retrieved review supplies the True/False rating; without one the result is Unverified. The confidence number is a heuristic, not a calibrated probability.
 
 ---
 
@@ -45,28 +48,46 @@ WhatsApp user → Meta Cloud API → FastAPI Webhook
 
 ### 1. Prerequisites
 - Python 3.10+
-- FFmpeg on `PATH` for video frame extraction
-- Tesseract OCR on `PATH` for text extraction from images/video frames
+- FFmpeg for video frame extraction (optional)
+- Tesseract OCR for text extraction from images/video frames (optional)
 
 ### 2. Installation
+On macOS, install the optional media tools with Homebrew:
+```sh
+brew install ffmpeg tesseract
+```
+
+Create and activate a virtual environment, then install the project dependencies:
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+```
+
+On Windows PowerShell, use:
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt
 ```
 
-On Windows, install Tesseract OCR separately, then reopen the terminal so it is on `PATH`. If it is installed outside `PATH`, set `TESSERACT_CMD` to the full path of `tesseract.exe`. Install FFmpeg and add its `bin` folder to `PATH`; `FFMPEG_PATH` can be used to point to a specific executable.
+On Windows, install Tesseract OCR (for example, with `winget install --id UB-Mannheim.TesseractOCR -e`) and FFmpeg, then ensure their executables are on `PATH`. If either tool is not on `PATH`, set its executable path in the project's `.env` file:
+```dotenv
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+FFMPEG_PATH=C:\path\to\ffmpeg.exe
+```
+Copy `.env.example` to `.env` to configure optional executable paths and API credentials. Leave `TESSERACT_CMD` and `FFMPEG_PATH` blank when the tools are available on `PATH`; otherwise set them to the executable paths. Do not commit `.env`.
 
 ### 3. Run tests
-```powershell
-python -m unittest tests.test_pipeline
-python -m pytest -q tests/test_server_endpoints.py
+```sh
+python -m pytest -q
 ```
 
 ### 4. Start the dashboard and API
-```powershell
+```sh
 python run.py
 ```
+On macOS/Linux, if the virtual environment is not activated, use `.venv/bin/python run.py`. On Windows, use `.\.venv\Scripts\python.exe run.py`.
 Open **http://127.0.0.1:8000**. The frontend is served by FastAPI; no separate Node/npm frontend server is needed.
 
 ## 📲 Connect a real WhatsApp bot
@@ -101,6 +122,31 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 Image and video analysis requires FFmpeg and Tesseract to be installed on the server. Videos are sampled for visible on-screen text only; audio/speech transcription is not currently supported. The displayed evaluation metrics are from the supplied evaluation data and should not be treated as a guarantee for new claims.
 
+## 🌐 Enable no-key web search and local verdicts
+
+The verifier searches public Bing result pages, with Wikipedia's no-key search endpoint as a fallback, and runs its assessment locally using Ollama. Neither step requires an API key. Public search pages are not a stable search API and may throttle or change their markup. Search results are presented as evidence, not as guaranteed authoritative findings.
+
+1. Install [Ollama](https://ollama.com/download) and start the Ollama application/server.
+2. Download the default local model (about 2.5 GB):
+   ```sh
+   ollama pull qwen3:4b
+   ```
+3. Copy `.env.example` to `.env` if needed. The default settings are `OLLAMA_BASE_URL=http://localhost:11434` and `OLLAMA_MODEL=qwen3:4b`. You can choose another locally installed model by changing `OLLAMA_MODEL`.
+4. Restart FactShield and check `GET /api/integrations-status`; it reports whether the local model is installed and responding.
+
+When a relevant local published fact-check matches, it takes precedence. Otherwise, FactShield searches Bing, falls back to Wikipedia when Bing has no relevant result, and sends the result titles/snippets to Ollama running on the same machine. Only linked search results are shown as sources. If both searches fail or Ollama is unavailable, the result remains **Unverified** with a status message. Search results can be incomplete or irrelevant; verify important claims independently. No cloud AI or external fact-check API is called by the verification pipeline.
+
+## 📚 Optional FEVER research benchmark
+
+The imported FEVER v1.0 training split contains 145,449 Wikipedia-derived, human-annotated research claims (SUPPORTS, REFUTES, or NOT ENOUGH INFO). It is not a collection of published fact-check reviews and is kept in a separate SQLite database; its labels are never used for live claim verdicts.
+
+Import it with:
+```sh
+.venv/bin/python scripts/import_fever_benchmark.py
+```
+
+The importer downloads the official 33 MB JSONL source and builds a local full-text-searchable SQLite database. In the Fact-Check Database tab, use the separate FEVER benchmark search to browse records and linked Wikipedia evidence pages. The generated `data/fever_benchmark.sqlite3` is local and Git-ignored. To redistribute the dataset, follow the applicable Wikipedia article licenses and FEVER's [license terms](https://fever.ai/download/fever/license.html), including attribution and share-alike requirements. Cite: Thorne et al. (2018), “FEVER: a Large-scale Dataset for Fact Extraction and VERification,” NAACL-HLT. See the [FEVER dataset](https://fever.ai/dataset/fever.html).
+
 ## 🌟 Key Features
 
 1. **Indian-Language Support:**
@@ -126,14 +172,14 @@ Image and video analysis requires FFmpeg and Tesseract to be installed on the se
 
 ## 📊 Evaluation & Benchmarks
 
-| Metric | In-Domain (WhatsApp) | Cross-Dataset Transfer (ISOT ➔ WhatsApp) |
-|---|---|---|
-| **Accuracy** | 94.2% | 54.1% (Classification alone fails) |
-| **Precision** | 93.8% | 51.5% |
-| **Recall** | 95.0% | 56.2% |
-| **F1 Score** | 94.4% | 53.7% |
+| Metric | In-domain (configured data) | ISOT train/test (configured data) | ISOT/LIAR → WhatsApp transfer (configured data) |
+|---|---:|---:|---:|
+| **Accuracy** | 100.0% | 88.5% | 54.1% |
+| **Precision** | 100.0% | 87.9% | 51.5% |
+| **Recall** | 100.0% | 89.1% | 56.2% |
+| **F1 Score** | 100.0% | 88.5% | 52.6% |
 
-*Conclusion:* Cross-dataset drop shows that pure NLP classification without retrieval fails on real WhatsApp misinformation. Retrieval over fact-check databases is mandatory.
+These values are copied from `data/evaluation_metrics.json`; the corresponding evaluation datasets and reproducible evaluation procedure are not included here. Treat them as unverified project-reported metrics, not independently validated performance claims.
 
 ---
 
@@ -141,6 +187,7 @@ Image and video analysis requires FFmpeg and Tesseract to be installed on the se
 
 - `GET /`: Interactive Web Dashboard & Simulator
 - `POST /api/verify`: Verify claim text or image file
+- `GET /api/integrations-status`: Report configured external evidence integrations
 - `GET /api/fact-checks`: Search & filter indexed fact-checks
 - `GET /api/analytics`: Aggregated statistical metrics
 - `GET /api/viva-info`: Viva defense details, metrics, limitations
