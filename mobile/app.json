@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "FactShield",
+    "slug": "factshield",
+    "version": "1.1.0",
+    "orientation": "portrait",
+    "scheme": "factshield",
+    "icon": "./assets/icon.png",
+    "ios": {
+      "bundleIdentifier": "com.factshield.app",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.factshield.app",
+      "versionCode": 2,
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "FactShield uses selected photos to check claims in images.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsText": true,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsWebPageWithMaxCount": 1,
+            "NSExtensionActivationSupportsImageWithMaxCount": 1
+          },
+          "iosShareExtensionName": "FactShield",
+          "iosAppGroupIdentifier": "group.com.factshield.app",
+          "androidIntentFilters": ["text/*", "image/*"]
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

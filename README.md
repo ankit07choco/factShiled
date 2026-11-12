@@ -9,7 +9,7 @@ Unlike traditional academic models that treat misinformation as a simple binary 
 ## 🏛️ System Architecture
 
 ```
-WhatsApp user → Meta Cloud API → FastAPI Webhook
+WhatsApp user → Meta WhatsApp Cloud API → FastAPI Webhook
                                      ↓
             Preprocess (language detect, OCR if image, URL extraction)
                                      ↓
@@ -46,81 +46,177 @@ WhatsApp user → Meta Cloud API → FastAPI Webhook
 
 ## 🚀 Quickstart & Setup
 
-### 1. Prerequisites
-- Python 3.10+
-- FFmpeg for video frame extraction (optional)
-- Tesseract OCR for text extraction from images/video frames (optional)
+### Requirements
 
-### 2. Installation
-On macOS, install the optional media tools with Homebrew:
-```sh
-brew install ffmpeg tesseract
-```
+**Backend**
+- Python 3.10 or newer and pip.
+- Ollama running on the same host as FactShield, or at a private network address reachable by it.
+- About 5.7 GB of disk space for the default text (`qwen3:4b`) and vision (`qwen2.5vl:3b`) models. Allow additional space for the operating system and project. A VPS with at least 16 GB RAM and 30 GB disk is recommended; CPU-only inference works but can be slow.
+- Tesseract OCR is optional. Without it, image-origin assessment still works, but OCR of text inside images is unavailable.
 
-Create and activate a virtual environment, then install the project dependencies:
+**Mobile development/builds**
+- Node.js and npm.
+- Android builds additionally require Android Studio/SDK and the Java version required by the Expo/Gradle toolchain.
+- iOS builds require macOS, Xcode, and Apple signing configuration.
+
+The website UI is served directly by FastAPI; there is no separate Node server or frontend build for the website.
+
+### Install Python dependencies
+
+macOS/Linux:
 ```sh
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
 ```
 
-On Windows PowerShell, use:
+For development and tests, install the development requirements instead:
+```sh
+.venv/bin/pip install -r requirements-dev.txt
+```
+
+Windows PowerShell:
 ```powershell
 py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\pip.exe install -r requirements-dev.txt
 ```
 
-On Windows, install Tesseract OCR (for example, with `winget install --id UB-Mannheim.TesseractOCR -e`) and FFmpeg, then ensure their executables are on `PATH`. If either tool is not on `PATH`, set its executable path in the project's `.env` file:
-```dotenv
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-FFMPEG_PATH=C:\path\to\ffmpeg.exe
-```
-Copy `.env.example` to `.env` to configure optional executable paths and API credentials. Leave `TESSERACT_CMD` and `FFMPEG_PATH` blank when the tools are available on `PATH`; otherwise set them to the executable paths. Do not commit `.env`.
+### Optional: install Tesseract OCR
 
-### 3. Run tests
+macOS:
 ```sh
-python -m pytest -q
+brew install tesseract
 ```
 
-### 4. Start the dashboard and API
+Ubuntu/Debian:
 ```sh
-python run.py
+sudo apt update
+sudo apt install -y tesseract-ocr
 ```
-On macOS/Linux, if the virtual environment is not activated, use `.venv/bin/python run.py`. On Windows, use `.\.venv\Scripts\python.exe run.py`.
-Open **http://127.0.0.1:8000**. The frontend is served by FastAPI; no separate Node/npm frontend server is needed.
+
+Windows: install Tesseract (for example, with `winget install --id UB-Mannheim.TesseractOCR -e`) and ensure `tesseract.exe` is on `PATH`. Otherwise set `TESSERACT_CMD` in `.env` to its full path. The Python `pytesseract` package is installed with the project requirements; the separate Tesseract executable is optional.
+
+### Configure Ollama and environment
+
+Install Ollama from [ollama.com/download](https://ollama.com/download), start its service, then download the default models:
+```sh
+ollama pull qwen3:4b
+ollama pull qwen2.5vl:3b
+```
+
+If you do not already have a `.env` file, copy `.env.example` to `.env` and adjust settings as needed. Do not overwrite an existing `.env`, commit it, or share its contents. `.env` is ignored by Git.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL; use a private address if Ollama is on another host |
+| `OLLAMA_MODEL` | `qwen3:4b` | Local text-verification model |
+| `OLLAMA_VISION_MODEL` | `qwen2.5vl:3b` | Local experimental image-origin model |
+| `TESSERACT_CMD` | blank | Optional full path to the Tesseract executable |
+| `HOST` | `127.0.0.1` | Host used by `run.py` for local development |
+| `PORT` | `8000` | Port used by `run.py` |
+| `META_VERIFY_TOKEN` | blank | Optional Meta webhook verification token |
+| `META_APP_SECRET` | blank | Optional Meta webhook signature verification secret |
+| `META_WHATSAPP_TOKEN` | blank | Optional WhatsApp Cloud API access token |
+| `META_PHONE_NUMBER_ID` | blank | Optional WhatsApp Cloud API phone number ID |
+| `META_GRAPH_API_VERSION` | `v26.0` | Optional Meta Graph API version |
+
+No search or AI API key is required for the local Ollama/Bing/Wikipedia flow.
+
+### Run the website and API locally
+
+macOS/Linux:
+```sh
+.venv/bin/python run.py
+```
+
+Windows PowerShell:
+```powershell
+.\.venv\Scripts\python.exe run.py
+```
+
+Open **http://127.0.0.1:8000**. The development server uses auto-reload and binds to localhost by default.
+
+Check model readiness at **http://127.0.0.1:8000/api/integrations-status**. It reports whether both local Ollama models are installed. FastAPI's interactive API documentation is available at **http://127.0.0.1:8000/docs**.
+
+### Run tests
+
+Install `requirements-dev.txt`, then run:
+```sh
+.venv/bin/python -m pytest -q
+```
+
+On Windows:
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+## 📱 Android and iOS app
+
+The website remains available at the same address. The Expo app in `mobile/` lets users paste text, pick an image, or share text/images to FactShield from another app. It sends inputs to the existing `POST /api/verify` endpoint and displays the claim verdict, the separate experimental image-origin estimate, explanations, and sources. Image analysis runs on the backend, so the phone must be able to reach the FactShield server.
+
+Install dependencies and start Expo:
+```sh
+cd mobile
+npm ci
+npm start
+```
+
+For development, a `127.0.0.1` address on a phone points to the phone itself, not the computer running FactShield. Deploy the backend to an HTTPS host or use a trusted HTTPS tunnel, then enter that server's base address in the app under **Connect your server**. The address is saved on the device. `EXPO_PUBLIC_API_URL` in `mobile/.env` can set an initial server address, but the in-app setting can be changed without rebuilding. It is a public server address, not a place for credentials.
+
+To install a native development build on a connected Android device or emulator:
+```sh
+cd mobile
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+npx expo run:android
+```
+
+To build the Android APK that the website serves:
+```sh
+cd mobile
+npx expo prebuild --platform android
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+cd android
+./gradlew :app:assembleRelease
+cd ../..
+cp mobile/android/app/build/outputs/apk/release/app-release.apk \
+  app/static/downloads/factshield-android.apk
+```
+
+The website serves the APK from `/downloads/android`. Android may ask users to allow installing apps from their browser. The current downloadable build is signed with a development key for testing; use your own protected release key before Play Store or production distribution. Increase `android.versionCode` in `mobile/app.json` for each Android update.
+
+For iPhone, use macOS with the full Xcode installation and a configured signing team:
+```sh
+cd mobile
+npm ci
+npx expo run:ios
+```
+
+Sharing from other apps requires a native build; Expo Go does not include the share extension. Local iOS builds and device distribution require Apple's signing setup. An iPhone release build has not been produced by this project yet.
 
 ## 📲 Connect a real WhatsApp bot
 
-The simulator works locally without Meta credentials. Live DMs require a Meta developer app with the WhatsApp product, a WhatsApp Business phone number, a public HTTPS deployment/tunnel, and Meta's webhook subscription. A local `127.0.0.1` address cannot receive Meta webhooks.
+FactShield connects directly to the Meta WhatsApp Cloud API, with no Twilio intermediary fee. A local `127.0.0.1` address cannot receive Meta webhooks; expose the app through a public HTTPS tunnel or deploy it.
 
-Set these environment variables in the server's environment (do not commit credentials):
+Set these environment variables in the untracked local `.env` file:
 
 | Variable | Description |
 |---|---|
-| `META_VERIFY_TOKEN` | Your private token, also entered as the webhook's Verify Token in Meta |
-| `META_APP_SECRET` | App Secret from the Meta developer dashboard; used to verify webhook signatures |
+| `META_VERIFY_TOKEN` | A private string you choose and also enter in Meta's webhook setup |
+| `META_APP_SECRET` | App Secret from the Meta developer dashboard; verifies webhook signatures |
 | `META_WHATSAPP_TOKEN` | WhatsApp Cloud API access token |
 | `META_PHONE_NUMBER_ID` | Phone Number ID from the WhatsApp API setup |
 | `META_GRAPH_API_VERSION` | Optional Graph API version, defaults to `v26.0` |
 
-For local PowerShell testing, set them before starting the process:
-```powershell
-$env:META_VERIFY_TOKEN = "choose-a-long-random-value"
-$env:META_APP_SECRET = "your-meta-app-secret"
-$env:META_WHATSAPP_TOKEN = "your-whatsapp-cloud-api-token"
-$env:META_PHONE_NUMBER_ID = "your-phone-number-id"
-python run.py
-```
+In the Meta developer dashboard, create an app with the WhatsApp product and configure the callback URL as `https://YOUR_PUBLIC_HOST/webhook/whatsapp`. Enter the same `META_VERIFY_TOKEN` in Meta, verify the webhook, and subscribe to `messages`. Restart FactShield after changing `.env`. Use the test phone number and test recipient provided by Meta to begin. For longer-term use, configure a suitable access token and an approved business sender. Keep all credentials private.
 
-Deploy the app behind HTTPS (bind to `0.0.0.0` and the hosting platform's port) and configure the callback URL as `https://YOUR_PUBLIC_HOST/webhook/whatsapp`, using the same `META_VERIFY_TOKEN`; subscribe the WhatsApp webhook to `messages`. The app downloads image/video media from Meta and replies to the sender using the Cloud API. Keep the access token private and follow WhatsApp consent, messaging-window, and template rules.
+Meta's current pricing includes 1,000 free service messages per business phone number each month; charges can apply above that and for other message categories, depending on recipient country. User-to-business messages are not charged by Meta. Check [Meta's current WhatsApp pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing) before production use. Local simulator use is free and does not send real WhatsApp messages.
 
-For a self-hosted server, start without the development reloader:
-```powershell
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
+For a production server, use the VPS guide below. Bind Uvicorn to `127.0.0.1` behind an HTTPS reverse proxy; do not expose the development server or Ollama directly to the internet.
 
-Image and video analysis requires FFmpeg and Tesseract to be installed on the server. Videos are sampled for visible on-screen text only; audio/speech transcription is not currently supported. The displayed evaluation metrics are from the supplied evaluation data and should not be treated as a guarantee for new claims.
+Image OCR requires Tesseract to be installed on the server. Published fact-check matches skip web search and model inference for faster responses. New claims still require public search and local-model assessment and can take longer. The displayed evaluation metrics are from the supplied evaluation data and should not be treated as a guarantee for new claims.
 
 ## 🌐 Enable no-key web search and local verdicts
 
@@ -131,10 +227,98 @@ The verifier searches public Bing result pages, with Wikipedia's no-key search e
    ```sh
    ollama pull qwen3:4b
    ```
-3. Copy `.env.example` to `.env` if needed. The default settings are `OLLAMA_BASE_URL=http://localhost:11434` and `OLLAMA_MODEL=qwen3:4b`. You can choose another locally installed model by changing `OLLAMA_MODEL`.
-4. Restart FactShield and check `GET /api/integrations-status`; it reports whether the local model is installed and responding.
+3. Pull the local vision model (about 3.2 GB) for experimental AI-image-origin assessments:
+   ```sh
+   ollama pull qwen2.5vl:3b
+   ```
+4. Copy `.env.example` to `.env` if needed. The defaults are `OLLAMA_BASE_URL=http://localhost:11434`, `OLLAMA_MODEL=qwen3:4b`, and `OLLAMA_VISION_MODEL=qwen2.5vl:3b`. You can set `OLLAMA_VISION_MODEL` to another locally installed Ollama vision model.
+5. Restart FactShield and check `GET /api/integrations-status`; it reports whether both local models are installed and responding.
 
-When a relevant local published fact-check matches, it takes precedence. Otherwise, FactShield searches Bing, falls back to Wikipedia when Bing has no relevant result, and sends the result titles/snippets to Ollama running on the same machine. Only linked search results are shown as sources. If both searches fail or Ollama is unavailable, the result remains **Unverified** with a status message. Search results can be incomplete or irrelevant; verify important claims independently. No cloud AI or external fact-check API is called by the verification pipeline.
+When a relevant local published fact-check matches, it takes precedence. Otherwise, FactShield searches Bing, falls back to Wikipedia when Bing has no relevant result, and sends the result titles/snippets to Ollama running on the same machine. Uploaded images are also sent to the local vision model for a separate, experimental image-origin estimate. Images are not sent to a cloud AI service by this pipeline. Visual AI-image detection is unreliable and cannot prove authenticity; editing, compression, and new generators can change visible clues. Search results can also be incomplete or irrelevant, so verify important claims independently.
+
+## ☁️ Host FactShield online
+
+The simplest always-on setup is one Ubuntu VPS running FastAPI and Ollama, with a domain and HTTPS reverse proxy in front. A static host alone (for example, GitHub Pages) cannot run the Python API or Ollama. The current temporary `trycloudflare.com` tunnel is useful for testing but depends on your computer and tunnel process staying online; it is not permanent hosting.
+
+### Server requirements
+
+- Ubuntu 22.04/24.04 or another supported Linux server.
+- Recommended: 4 or more CPU cores, 16 GB RAM, and at least 30 GB free disk. The two default models occupy about 5.7 GB; model execution needs additional memory and disk. CPU-only inference works but can be slow; a compatible GPU can improve response time.
+- A domain name with an A/AAAA DNS record pointing to the server.
+- Public inbound ports **80/443** for the HTTPS proxy and **22** for SSH. Do not open ports **8000** or **11434** publicly.
+
+On Ubuntu with UFW, allow SSH before enabling the firewall, then allow only SSH and the HTTPS proxy. Apply equivalent rules in your VPS provider's firewall:
+```sh
+sudo apt install -y ufw
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+sudo ufw status
+```
+
+### Deploy on one VPS
+
+1. Push or transfer the latest FactShield code to the server. Do not upload or commit `.env` through Git. For a private repository, use an SSH deploy key or another secure Git credential method.
+2. Install the system packages and Python dependencies:
+   ```sh
+   sudo apt update
+   sudo apt install -y git python3 python3-venv python3-pip tesseract-ocr
+   # Clone/copy the repository into /opt/factshield, then:
+   cd /opt/factshield
+   python3 -m venv .venv
+   .venv/bin/pip install --upgrade pip
+   .venv/bin/pip install -r requirements.txt
+   ```
+   Tesseract is optional; omit it if OCR is not required.
+3. Install Ollama using its [official Linux instructions](https://ollama.com/download/linux), enable/start its service, then download both models:
+   ```sh
+   sudo systemctl enable --now ollama
+   ollama pull qwen3:4b
+   ollama pull qwen2.5vl:3b
+   ```
+   Keep Ollama bound to localhost. The application defaults to `http://localhost:11434`; if Ollama runs on another machine, use only a private network address and firewall it to the application server.
+4. Create `/opt/factshield/.env` on the server from `.env.example` only if no `.env` exists (from the project directory, run `[ -f .env ] || cp .env.example .env`), then configure the model settings and any optional WhatsApp credentials. Restrict its file permissions (`chmod 600 .env`). Never paste secrets into the README or a public issue.
+5. Run FactShield as a system service so it restarts automatically. For example, create `/etc/systemd/system/factshield.service` with `sudo nano /etc/systemd/system/factshield.service` (change `ubuntu` to the Linux account that owns the project):
+   ```ini
+   [Unit]
+   Description=FactShield API
+   After=network-online.target ollama.service
+   Wants=network-online.target
+
+   [Service]
+   Type=simple
+   User=ubuntu
+   WorkingDirectory=/opt/factshield
+   ExecStart=/opt/factshield/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   The app loads `/opt/factshield/.env`. Ensure the service account can read it and the application files.
+   ```sh
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now factshield
+   sudo systemctl status factshield
+   ```
+   To inspect service logs, use `sudo journalctl -u factshield -f`; Ollama logs are available with `sudo journalctl -u ollama -f`.
+6. Install [Caddy](https://caddyserver.com/docs/install) and point your domain to the VPS. Add a Caddy site (replace the hostname):
+   ```caddyfile
+   factshield.example.com {
+       reverse_proxy 127.0.0.1:8000
+   }
+   ```
+   Put this in `/etc/caddy/Caddyfile`, then run `sudo systemctl reload caddy`. Caddy obtains and renews the HTTPS certificate when DNS and ports 80/443 are configured correctly. Keep the firewall closed to ports 8000 and 11434.
+7. Verify `https://factshield.example.com/` and `https://factshield.example.com/api/integrations-status`. Both text and vision models should report as available. The website APK link is `https://factshield.example.com/downloads/android`.
+8. In the mobile app, open **Connect your server** and save `https://factshield.example.com`. If using WhatsApp, set the Meta callback URL to `https://factshield.example.com/webhook/whatsapp`.
+
+The server stores the project files and any optional local benchmark data on its disk. Back up files you need to preserve when replacing the server. If deploying from Git, include the APK at `app/static/downloads/factshield-android.apk` if you want the website's Android download route to work.
+
+### Public deployment security
+
+The API currently has no user login or application-level rate limiting. Anyone who can reach it may submit text/images and consume server/model resources. Before inviting the public, add appropriate authentication or reverse-proxy rate limiting, monitor usage, and keep dependencies updated. The API limits image uploads to 16 MB, but this alone does not prevent abuse. Do not expose Ollama's API, `.env`, or an unauthenticated development server to the internet. FastAPI's `/docs` is enabled by default; restrict or disable it for a public production deployment if it should not be exposed.
 
 ## 📚 Optional FEVER research benchmark
 
@@ -153,12 +337,13 @@ The importer downloads the official 33 MB JSONL source and builds a local full-t
    - Detects and handles Indian languages including Hindi (`hi`), Bengali (`bn`), Tamil (`ta`), Marathi (`mr`), Telugu (`te`), and English (`en`).
    - Includes multilingual ClaimReview fact-checks from BOOM Live, AltNews, Factly, and PIB Fact Check.
 
-2. **Image Forward OCR:**
-   - Detects text in viral image forwards, screenshots, and propaganda posters.
+2. **Image Forward Analysis:**
+   - Extracts text from image forwards and provides an experimental local-model estimate of possible AI generation.
 
-3. **WhatsApp Bot Simulator & Webhook:**
+3. **WhatsApp Chatbot & Webhook:**
    - Interactive live chat mockup mimicking a smartphone interface.
-   - Live Meta WhatsApp Cloud API JSON payload viewer (`/webhook/whatsapp`).
+   - Meta WhatsApp Cloud API webhook for incoming text and image messages (`/webhook/whatsapp`).
+   - Local simulator remains available for testing without a WhatsApp account.
 
 4. **Transparent Scoring Formula:**
    $$S_{fake} = w_{fc} \cdot S_{fc} + w_{sem} \cdot S_{sem} + w_{style} \cdot S_{style} + w_{evid} \cdot S_{evid}$$
@@ -185,15 +370,45 @@ These values are copied from `data/evaluation_metrics.json`; the corresponding e
 
 ## 🛠️ REST API Endpoints
 
-- `GET /`: Interactive Web Dashboard & Simulator
-- `POST /api/verify`: Verify claim text or image file
-- `GET /api/integrations-status`: Report configured external evidence integrations
-- `GET /api/fact-checks`: Search & filter indexed fact-checks
-- `GET /api/analytics`: Aggregated statistical metrics
-- `GET /api/viva-info`: Viva defense details, metrics, limitations
-- `GET /webhook/whatsapp`: Meta Cloud API handshake verification
-- `POST /webhook/whatsapp`: Meta Cloud API incoming message handler
+- `GET /`: Website dashboard and simulator.
+- `GET /docs`: FastAPI interactive API documentation.
+- `GET /api/integrations-status`: Availability of the local text and vision models.
+- `POST /api/verify`: Multipart form with optional `text` and/or `image` fields. Image uploads are limited to 16 MB. An image response includes an `image_origin` result separate from the text-claim verdict; an image without readable text can still receive an image-origin assessment.
+- `GET /downloads/android`: Downloads the APK if it exists at `app/static/downloads/factshield-android.apk`.
+- `GET /api/fact-checks`: Search and filter indexed published fact-checks.
+- `GET /api/analytics`: Aggregated evaluation metrics.
+- `GET /api/viva-info`: Project metrics and limitations.
+- `GET /webhook/whatsapp`: Meta Cloud API handshake verification.
+- `POST /webhook/whatsapp`: Meta Cloud API incoming-message handler and local simulator.
 
-```powershell
-python -m unittest tests/test_pipeline.py
+Example image request:
+```sh
+curl -F 'image=@/path/to/image.jpg' https://factshield.example.com/api/verify
+```
+
+The separate `image_origin` object reports a status, model name, a verdict (`Likely AI-generated`, `Likely not AI-generated`, or `Inconclusive`), explanation, and disclaimer. This is a visual model estimate, not forensic proof or a calibrated probability. Images are processed by the configured Ollama vision model on the backend host.
+
+## 🧰 Troubleshooting
+
+- **Text model unavailable:** Start Ollama and run `ollama pull qwen3:4b`. Check `GET /api/integrations-status`.
+- **Image-origin status says the model is missing:** Run `ollama pull qwen2.5vl:3b`, then refresh the status endpoint. The app returns `Inconclusive` with setup guidance when the vision model cannot be used.
+- **Image OCR does not return text:** Install the Tesseract executable and ensure it is on `PATH`, or set `TESSERACT_CMD` to its full path. The image-origin estimate does not depend on OCR.
+- **A phone cannot reach FactShield:** Do not use `127.0.0.1` in the phone app; use the backend's public HTTPS domain. Keep the backend and Ollama running.
+- **The `/downloads/android` route returns 404:** Add/build the APK at `app/static/downloads/factshield-android.apk` and redeploy.
+- **Model responses are slow:** CPU-only local inference may take time. Use a server with more memory/compute, or a supported GPU. Do not expose Ollama publicly to make it faster.
+- **An image is labeled Inconclusive:** This is expected when visual evidence is insufficient. Editing, resizing, compression, screenshots, and new generators can alter or remove visual clues; do not treat an AI-image estimate as proof.
+
+## 🧪 Validation commands
+
+Backend tests:
+```sh
+.venv/bin/python -m pytest -q
+```
+
+Mobile app checks:
+```sh
+cd mobile
+npm ci
+npm run lint
+npm run typecheck
 ```

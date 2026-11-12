@@ -8,7 +8,6 @@ from urllib.parse import quote, urlparse
 import requests
 
 from app.core.pipeline import pipeline
-from app.core.preprocessing import extract_text_from_video
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +102,8 @@ def _reply_for_message(
     if message_type == "text":
         received_text = message.get("text", {}).get("body", "")
         result = pipeline.verify(text=received_text)
-    elif message_type in ("image", "video"):
-        media_info = message.get(message_type, {})
+    elif message_type == "image":
+        media_info = message.get("image", {})
         caption = media_info.get("caption", "")
         received_text = caption
         media_id = media_info.get("id")
@@ -119,29 +118,13 @@ def _reply_for_message(
                     result = pipeline.verify(text=caption or None, image_bytes=media_bytes)
                     if result.get("ocr_result", {}).get("error") and caption:
                         warning = result["ocr_result"]["error"]
-                elif message_type == "video" and mime_type.startswith("video/"):
-                    video_result = extract_text_from_video(media_bytes)
-                    received_text = " ".join(
-                        part
-                        for part in (caption, video_result.get("extracted_text", ""))
-                        if part
-                    )
-                    if received_text:
-                        result = pipeline.verify(text=received_text)
-                        result["video_result"] = video_result
-                        if not video_result.get("success"):
-                            warning = video_result["error"]
-                        else:
-                            warning = "Only on-screen text was analyzed; video speech is not transcribed."
-                    else:
-                        warning = video_result.get("error", "Video could not be analyzed.")
                 else:
                     warning = f"Unsupported media type: {mime_type or 'unknown'}."
             except (requests.RequestException, ValueError, RuntimeError) as exc:
                 logger.warning("WhatsApp media processing failed: %s", exc)
                 warning = str(exc)
     else:
-        warning = "Please send a text message, image, or video."
+        warning = "Please send a text message or image. Video verification is not supported."
 
     if result and result.get("error") and not result.get("whatsapp_reply"):
         warning = result["error"]

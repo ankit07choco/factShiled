@@ -106,7 +106,18 @@ def compute_verdict_and_score(
         }[verdict]
     else:
         # No direct fact check found in database
-        if is_sensational or style_fake_prob >= 0.50:
+        web_status = web_search_result.get("status")
+        web_message = web_search_result.get("message")
+        if (
+            web_status not in {"success", "skipped"}
+            and isinstance(web_message, str)
+            and web_message.strip()
+        ):
+            verdict = VERDICT_UNVERIFIED
+            fake_score = 30.0
+            confidence = 35
+            explanation = f"Verification could not be completed: {web_message}"
+        elif is_sensational or style_fake_prob >= 0.50:
             verdict = VERDICT_UNVERIFIED
             fake_score = 45.0 + (style_fake_prob * 30.0)
             confidence = round(fake_score)

@@ -5,6 +5,7 @@ from unittest.mock import patch
 import requests
 
 from app.core.local_web_search import (
+    _assess_with_local_model,
     _decode_bing_url,
     _search_results,
     _search_wikipedia_results,
@@ -78,10 +79,50 @@ def test_local_assessment_uses_ollama_without_api_key():
     assert result["verdict"] == "Likely False"
     assert result["sources"][0]["url"] == "https://example.test/brain-fact"
     assert "Bing" in result["message"]
+    assert post.call_args.kwargs["json"]["think"] is False
+    assert "do not treat a title mention as evidence" in post.call_args.kwargs["json"]["prompt"]
+    assert "one-sentence explanation must agree" in post.call_args.kwargs["json"]["prompt"]
+    assert "example.test/brain-fact" not in post.call_args.kwargs["json"]["prompt"]
     assert "api_key" not in post.call_args.kwargs
     assert "headers" not in post.call_args.kwargs
     assert post.call_args.args[0] == "http://localhost:11434/api/generate"
     assert post.call_args.kwargs["json"]["model"] == "qwen3:4b"
+
+
+def test_local_assessment_ignores_snippets_that_only_echo_the_claim():
+    model_response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "response": (
+                '{"verdict":"Likely True",'
+                '"explanation":"The Sun rises due east at the equinox."}'
+            )
+        },
+    )
+    sources = [
+        {
+            "title": "The Sun Rises in the East",
+            "url": "https://example.test/album",
+            "snippet": "The Sun Rises in the East is the debut album of a rapper.",
+        },
+        {
+            "title": "Sun path",
+            "url": "https://example.test/sun-path",
+            "snippet": "Except for the poles, the Sun rises due east at the equinox.",
+        },
+    ]
+
+    with patch(
+        "app.core.local_web_search.requests.post",
+        return_value=model_response,
+    ) as post:
+        result = _assess_with_local_model("The Sun rises in the east", sources)
+
+    assert result["verdict"] == "Likely True"
+    prompt = post.call_args.kwargs["json"]["prompt"]
+    assert "Sun path" in prompt
+    assert "debut album" not in prompt
+    assert post.call_args.kwargs["json"]["options"]["num_predict"] == 256
 
 
 def test_irrelevant_search_results_do_not_get_sent_to_the_model():

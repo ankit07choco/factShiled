@@ -9,7 +9,6 @@ from app.core.preprocessing import (
     extract_urls,
     clean_text,
     extract_text_from_image,
-    extract_text_from_video,
 )
 from app.core.claim_extraction import extract_claims
 from app.core.style_classifier import style_classifier
@@ -30,6 +29,24 @@ class TestFactShieldPipeline(unittest.TestCase):
         patcher = patch("app.core.fact_check_search.GOOGLE_FACT_CHECK_API_KEY", "")
         patcher.start()
         self.addCleanup(patcher.stop)
+        search_patcher = patch(
+            "app.core.pipeline.search_and_assess_claim",
+            return_value={
+                "status": "not_configured",
+                "message": "Live search disabled in unit tests.",
+                "verdict": "Unverified",
+                "explanation": "",
+                "sources": [],
+            }
+        )
+        search_patcher.start()
+        self.addCleanup(search_patcher.stop)
+        image_origin_patcher = patch(
+            "app.core.pipeline.assess_image_origin",
+            return_value=None,
+        )
+        image_origin_patcher.start()
+        self.addCleanup(image_origin_patcher.stop)
         openai_search_patcher = patch("app.core.openai_search.OPENAI_API_KEY", "")
         openai_search_patcher.start()
         self.addCleanup(openai_search_patcher.stop)
@@ -68,6 +85,23 @@ class TestFactShieldPipeline(unittest.TestCase):
         self.assertFalse(calm_features["is_sensational"])
         self.assertLess(calm_features["style_fake_probability"], 0.40)
 
+    def test_web_assessment_failure_is_reported_as_unverified(self):
+        result = compute_verdict_and_score(
+            fact_check_result={"has_match": False, "top_match": None},
+            web_search_result={
+                "status": "model_error",
+                "message": "Local Ollama returned an invalid assessment.",
+                "verdict": "Unverified",
+                "sources": [],
+            },
+            style_features={"style_fake_probability": 0.1, "is_sensational": False},
+            claim_text="The Sun rises in the east.",
+            urls=[],
+        )
+
+        self.assertEqual(result["verdict"], "Unverified")
+        self.assertIn("Local Ollama returned an invalid assessment", result["explanation"])
+
     def test_image_ocr_never_invents_claim_text(self):
         image_buffer = BytesIO()
         Image.new("RGB", (4, 4), "white").save(image_buffer, format="PNG")
@@ -76,6 +110,29 @@ class TestFactShieldPipeline(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["extracted_text"], "")
         self.assertIn("No readable text", result["error"])
+
+    def test_image_without_ocr_text_still_returns_image_origin_assessment(self):
+        image_origin = {
+            "status": "success",
+            "verdict": "Inconclusive",
+            "explanation": "No reliable visual provenance clues were found.",
+            "disclaimer": "This estimate is not proof.",
+        }
+        with patch(
+            "app.core.pipeline.extract_text_from_image",
+            return_value={
+                "success": False,
+                "extracted_text": "",
+                "error": "No readable text was found in the image.",
+            },
+        ), patch(
+            "app.core.pipeline.assess_image_origin",
+            return_value=image_origin,
+        ):
+            result = pipeline.verify(image_bytes=b"image-bytes")
+
+        self.assertEqual(result["image_origin"], image_origin)
+        self.assertIn("Inconclusive", result["whatsapp_reply"])
 
     def test_image_ocr_reports_how_to_configure_missing_tesseract(self):
         import pytesseract
@@ -89,7 +146,7 @@ class TestFactShieldPipeline(unittest.TestCase):
             result = extract_text_from_image(image_buffer.getvalue())
         self.assertFalse(result["success"])
         self.assertIn("TESSERACT_CMD", result["error"])
-        self.assertIn("tesseract.exe", result["error"])
+        self.assertIn("full path", result["error"])
 
     def test_image_ocr_finds_default_windows_tesseract_installation(self):
         import pytesseract
@@ -287,29 +344,18 @@ class TestFactShieldPipeline(unittest.TestCase):
         self.assertIn("AI assessment grounded in Bing search", result["explanation"])
         self.assertEqual(result["sources"][0]["source_type"], "Web search")
 
-    def test_published_fact_check_takes_precedence_over_openai_web_search(self):
-        assessment = {
-            "status": "success",
-            "message": "Search completed.",
-            "verdict": "Likely False",
-            "explanation": "Contradictory search assessment.",
-            "sources": [{
-                "title": "Example",
-                "url": "https://example.test/",
-                "publisher": "OpenAI web search result",
-                "source_type": "Web search"
-            }]
-        }
+    def test_published_fact_check_skips_web_search(self):
         with patch(
             "app.core.pipeline.search_and_assess_claim",
-            return_value=assessment
-        ):
+        ) as search:
             result = pipeline.verify(
                 text="Chandrayaan-3 landed on the Moon on 23 August 2023."
             )
 
         self.assertEqual(result["verdict"], "Likely True")
         self.assertEqual(result["sources"][0]["source_type"], "Published fact-check")
+        self.assertEqual(result["web_search"]["status"], "skipped")
+        search.assert_not_called()
 
     def test_google_fact_check_api_errors_are_reported(self):
         import requests
@@ -443,38 +489,6 @@ class TestFactShieldPipeline(unittest.TestCase):
         self.assertTrue(verify_meta_signature(body, signature, "app-secret"))
         self.assertFalse(verify_meta_signature(body, "sha256=invalid", "app-secret"))
         self.assertFalse(verify_meta_signature(body, None, "app-secret"))
-
-    def test_video_webhook_returns_clear_media_processing_status(self):
-        payload = {
-            "entry": [{
-                "changes": [{
-                    "value": {
-                        "messages": [{
-                            "from": "919876543210",
-                            "type": "video",
-                            "video": {"id": "media-id"}
-                        }]
-                    }
-                }]
-            }]
-        }
-        with patch("app.core.preprocessing.shutil.which", return_value=None):
-            response = process_whatsapp_payload(
-                payload,
-                media_downloader=lambda _: (b"video-bytes", "video/mp4")
-            )
-        self.assertTrue(response["success"])
-        self.assertIn("FFmpeg", response["reply_text"])
-
-    def test_blank_ffmpeg_path_uses_default_executable_name(self):
-        with (
-            patch.dict("os.environ", {"FFMPEG_PATH": ""}),
-            patch("app.core.preprocessing.shutil.which", return_value=None) as which,
-        ):
-            result = extract_text_from_video(b"video-bytes")
-
-        self.assertFalse(result["success"])
-        which.assert_called_once_with("ffmpeg")
 
     def test_whatsapp_send_uses_bearer_token(self):
         class FakeResponse:
