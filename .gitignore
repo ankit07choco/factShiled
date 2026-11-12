@@ -6,3 +6,6 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 /data/fever_benchmark.sqlite3
+/data/factshield_verifications.sqlite3
+/data/factshield_verifications.sqlite3-shm
+/data/factshield_verifications.sqlite3-wal

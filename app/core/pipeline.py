@@ -1,10 +1,15 @@
 from typing import Optional, Dict, Any
+from app.core.article_extraction import ArticleExtractionError, fetch_article
 from app.core.preprocessing import detect_language, extract_urls, clean_text, extract_text_from_image
 from app.core.image_origin import assess_image_origin
 from app.core.claim_extraction import extract_claims
 from app.core.style_classifier import style_classifier
 from app.core.fact_check_search import fact_check_engine
-from app.core.local_web_search import search_and_assess_claim
+from app.core.local_web_search import (
+    ArticleClaimExtractionError,
+    extract_article_claim,
+    search_and_assess_claim,
+)
 from app.core.scoring import compute_verdict_and_score
 
 class VerificationPipeline:
@@ -14,7 +19,8 @@ class VerificationPipeline:
     def verify(
         self,
         text: Optional[str] = None,
-        image_bytes: Optional[bytes] = None
+        image_bytes: Optional[bytes] = None,
+        input_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Runs the end-to-end verification pipeline on text or image WhatsApp forwards.
@@ -22,6 +28,42 @@ class VerificationPipeline:
         ocr_result = None
         input_text = text or ""
         image_origin_result = None
+        article_extraction = None
+        urls = extract_urls(input_text)
+
+        if input_text and not image_bytes:
+            if input_mode == "link" and not urls:
+                message = "Paste a valid public article URL to use Link verification."
+                return {
+                    "error": message,
+                    "verdict": "Unverified",
+                    "confidence_score": 0,
+                    "article_extraction": {"status": "error", "message": message},
+                }
+            if urls:
+                candidate_url = urls[0].rstrip(".,!?;:)]}")
+                if candidate_url.startswith("www."):
+                    candidate_url = f"https://{candidate_url}"
+                is_url_only = input_text.strip() in {urls[0], candidate_url}
+            else:
+                candidate_url = ""
+                is_url_only = False
+            if candidate_url and (input_mode == "link" or is_url_only):
+                try:
+                    article_extraction = fetch_article(candidate_url)
+                except ArticleExtractionError as exc:
+                    return {
+                        "error": str(exc),
+                        "verdict": "Unverified",
+                        "confidence_score": 0,
+                        "article_extraction": {
+                            "status": "error",
+                            "url": candidate_url,
+                            "message": str(exc),
+                        },
+                    }
+                input_text = article_extraction["text"]
+                urls = [article_extraction["url"]]
 
         # Step 1: Preprocess (OCR if image forward)
         if image_bytes:
@@ -51,12 +93,46 @@ class VerificationPipeline:
             }
 
         cleaned = clean_text(input_text)
-        urls = extract_urls(input_text)
         lang_info = detect_language(input_text)
 
         # Step 2: Claim Extraction
-        claim_data = extract_claims(cleaned)
-        primary_claim = claim_data.get("primary_claim") or cleaned
+        if article_extraction:
+            try:
+                primary_claim = extract_article_claim(
+                    article_extraction["title"],
+                    article_extraction["text"],
+                )
+            except ArticleClaimExtractionError as exc:
+                return {
+                    "error": str(exc),
+                    "verdict": "Unverified",
+                    "confidence_score": 0,
+                    "article_extraction": {
+                        "status": "error",
+                        "url": article_extraction["url"],
+                        "title": article_extraction["title"],
+                        "message": str(exc),
+                    },
+                }
+            if not primary_claim:
+                message = (
+                    "No specific checkable factual claim was found. Paste a factual "
+                    "sentence from the article in Text mode."
+                )
+                return {
+                    "error": message,
+                    "verdict": "Unverified",
+                    "confidence_score": 0,
+                    "article_extraction": {
+                        "status": "no_checkable_claim",
+                        "url": article_extraction["url"],
+                        "title": article_extraction["title"],
+                        "message": message,
+                    },
+                }
+        else:
+            claim_data = extract_claims(cleaned)
+            primary_claim = claim_data.get("primary_claim") or cleaned
 
         # Step 3: Multi-signal evaluation
         # Signal 1 & 2: Fact-Check API & Semantic vector DB search
@@ -83,7 +159,17 @@ class VerificationPipeline:
                 "sources": [],
             }
         else:
-            web_search_result = search_and_assess_claim(primary_claim)
+            if article_extraction:
+                article_title = article_extraction["title"].split(" - ", 1)[0].strip()
+                if "," in article_title:
+                    article_title = article_title.rsplit(",", 1)[-1].strip()
+                web_search_result = search_and_assess_claim(
+                    primary_claim,
+                    search_query=article_title,
+                    exclude_urls=[article_extraction["url"]],
+                )
+            else:
+                web_search_result = search_and_assess_claim(primary_claim)
 
         # Signal 3: Style & Sensationalism classifier
         style_features = style_classifier.extract_features(input_text)
@@ -119,6 +205,18 @@ class VerificationPipeline:
             "primary_claim": primary_claim,
             "language": lang_info,
             "urls_detected": urls,
+            "article_extraction": (
+                {
+                    "status": "success",
+                    "url": article_extraction["url"],
+                    "title": article_extraction["title"],
+                    "message": (
+                        "The article's selected factual claim was checked against "
+                        "independent sources; the article itself is not treated as evidence."
+                    ),
+                }
+                if article_extraction else None
+            ),
             "ocr_result": ocr_result,
             "image_origin": image_origin_result,
             "verdict": verdict_data["verdict"],

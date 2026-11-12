@@ -1,15 +1,31 @@
 import os
 import json
 import logging
-from typing import Optional
-from fastapi import FastAPI, Request, File, UploadFile, Form, Query, Response
+import secrets
+import sqlite3
+from typing import Any, Literal, Optional
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.pipeline import pipeline
 from app.core.image_origin import get_image_origin_model_status
 from app.core.local_web_search import get_local_model_status
+from app.core.verification_store import verification_store
 from app.webhook.meta_whatsapp import (
     META_APP_SECRET,
     META_PHONE_NUMBER_ID,
@@ -33,6 +49,29 @@ app = FastAPI(
     version="1.0.0"
 )
 
+ADMIN_USERNAME = os.getenv("FACTSHIELD_ADMIN_USERNAME", "")
+ADMIN_PASSWORD = os.getenv("FACTSHIELD_ADMIN_PASSWORD", "")
+_configured_session_secret = os.getenv("FACTSHIELD_SESSION_SECRET", "")
+SESSION_SECRET_CONFIGURED = len(_configured_session_secret) >= 32
+SESSION_SECRET_KEY = _configured_session_secret or secrets.token_urlsafe(32)
+SESSION_COOKIE_SECURE = os.getenv(
+    "FACTSHIELD_SESSION_COOKIE_SECURE", "false"
+).strip().lower() in {"1", "true", "yes"}
+ADMIN_LOGIN_ENABLED = bool(
+    ADMIN_USERNAME
+    and len(ADMIN_PASSWORD) >= 12
+    and SESSION_SECRET_CONFIGURED
+)
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET_KEY,
+    session_cookie="factshield_session",
+    max_age=12 * 60 * 60,
+    same_site="lax",
+    https_only=SESSION_COOKIE_SECURE,
+)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -40,6 +79,129 @@ ANDROID_APK_PATH = os.path.join(STATIC_DIR, "downloads", "factshield-android.apk
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+
+class AdminCredentials(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class VerificationRecordUpdate(BaseModel):
+    claim: str = Field(min_length=1, max_length=2000)
+    verdict: Literal["Likely True", "Likely False"]
+    confidence_score: int = Field(ge=0, le=100)
+    explanation: str = Field(max_length=4000)
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def require_admin(
+    request: Request,
+    x_csrf_token: Optional[str] = Header(None, alias="X-CSRF-Token"),
+) -> bool:
+    if request.session.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    expected_token = request.session.get("csrf_token")
+    if (
+        not expected_token
+        or not x_csrf_token
+        or not secrets.compare_digest(expected_token, x_csrf_token)
+    ):
+        raise HTTPException(status_code=403, detail="Invalid or missing CSRF token.")
+    return True
+
+
+@app.get("/api/session")
+async def get_session(request: Request):
+    role = request.session.get("role")
+    if role != "admin":
+        return {"role": "user"}
+    csrf_token = request.session.get("csrf_token")
+    if not csrf_token:
+        csrf_token = secrets.token_urlsafe(32)
+        request.session["csrf_token"] = csrf_token
+    return {"role": "admin", "csrf_token": csrf_token}
+
+
+@app.post("/api/admin/login")
+async def admin_login(credentials: AdminCredentials, request: Request):
+    if not ADMIN_LOGIN_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Admin login is not configured. Set FACTSHIELD_ADMIN_USERNAME, "
+                "a FACTSHIELD_ADMIN_PASSWORD of at least 12 characters, and a "
+                "random FACTSHIELD_SESSION_SECRET of at least 32 characters."
+            ),
+        )
+    if not (
+        secrets.compare_digest(
+            credentials.username.encode("utf-8"), ADMIN_USERNAME.encode("utf-8")
+        )
+        and secrets.compare_digest(
+            credentials.password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8")
+        )
+    ):
+        raise HTTPException(status_code=401, detail="Invalid admin credentials.")
+
+    request.session.clear()
+    csrf_token = secrets.token_urlsafe(32)
+    request.session.update({"role": "admin", "csrf_token": csrf_token})
+    return {"role": "admin", "csrf_token": csrf_token}
+
+
+@app.post("/api/admin/logout", dependencies=[Depends(require_admin)])
+async def admin_logout(request: Request):
+    request.session.clear()
+    return {"role": "user"}
+
+
+@app.get("/api/verifications")
+async def get_saved_verifications(
+    search: Optional[str] = Query(None, max_length=200),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    records, total = verification_store.list_records(
+        search=search, limit=limit, offset=offset
+    )
+    return {"total": total, "data": records}
+
+
+@app.put(
+    "/api/verifications/{record_id}",
+    dependencies=[Depends(require_admin)],
+)
+async def update_saved_verification(
+    record_id: int,
+    changes: VerificationRecordUpdate,
+):
+    if not changes.claim.strip():
+        raise HTTPException(status_code=422, detail="Claim text cannot be blank.")
+    try:
+        updated = verification_store.update_record(record_id, dict(changes))
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Another saved record already has the same normalized claim.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Saved verification not found.")
+    return {"updated": True}
+
+
+@app.delete(
+    "/api/verifications/{record_id}",
+    dependencies=[Depends(require_admin)],
+)
+async def delete_saved_verification(
+    record_id: int
+):
+    if not verification_store.delete_record(record_id):
+        raise HTTPException(status_code=404, detail="Saved verification not found.")
+    return {"deleted": True}
+
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -64,7 +226,8 @@ async def download_android_app():
 async def verify_claim_endpoint(
     request: Request,
     text: Optional[str] = Form(None),
-    image: Optional[UploadFile] = File(None)
+    image: Optional[UploadFile] = File(None),
+    input_mode: Optional[str] = Form(None),
 ):
     """
     Core claim verification API endpoint.
@@ -90,9 +253,23 @@ async def verify_claim_endpoint(
             content={"error": "Please provide claim text or upload an image."}
         )
 
-    result = pipeline.verify(text=text, image_bytes=image_bytes)
+    result = pipeline.verify(text=text, image_bytes=image_bytes, input_mode=input_mode)
     if result.get("error") and not result.get("input_text") and not result.get("image_origin"):
         return JSONResponse(status_code=422, content={"error": result["error"], **result})
+    try:
+        saved_record = verification_store.save_if_conclusive(result)
+    except sqlite3.Error:
+        logger.exception("Could not save a completed verification to the database.")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "Verification completed, but the result could not be saved.",
+                "verification_result": result,
+            },
+        )
+    result["saved_to_database"] = saved_record is not None
+    if saved_record:
+        result["database_record_id"] = saved_record["id"]
     return JSONResponse(content=result)
 
 @app.get("/api/integrations-status")
@@ -210,6 +387,7 @@ async def get_analytics():
 
     return {
         "total_fact_checks_indexed": len(checks),
+        "saved_verifications": verification_store.summary(),
         "verdict_distribution": verdicts,
         "category_breakdown": categories,
         "language_breakdown": languages,

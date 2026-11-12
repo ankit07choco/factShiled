@@ -9,18 +9,46 @@ const PRESETS = {
 let chartInstance1 = null;
 let chartInstance2 = null;
 let allFactChecks = [];
+let currentRole = "user";
+let csrfToken = "";
+let editingRecord = null;
+let activeInputMode = "text";
 
 function applyPreset(key) {
-  document.getElementById("claimInput").value = PRESETS[key] || "";
+  const claimInput = document.getElementById("claimInput");
+  claimInput.value = PRESETS[key] || "";
+  document.getElementById("claimCharacterCount").textContent = claimInput.value.length;
+  setInputMode("text");
 }
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || `Request failed (${response.status})`);
+    throw new Error(data.error || data.detail || `Request failed (${response.status})`);
   }
   return data;
+}
+
+function csrfHeaders() {
+  return csrfToken ? { "X-CSRF-Token": csrfToken } : {};
+}
+
+function setInputMode(mode) {
+  activeInputMode = mode;
+  document.querySelectorAll("[data-input-mode]").forEach(button => {
+    button.classList.toggle("active", button.dataset.inputMode === mode);
+  });
+  document.getElementById("imageInputGroup").classList.toggle("d-none", mode !== "image");
+  if (mode !== "image") document.getElementById("imageInput").value = "";
+
+  const claimInput = document.getElementById("claimInput");
+  claimInput.placeholder = mode === "link"
+    ? "Paste a public article URL to extract and verify its text..."
+    : "Paste a WhatsApp forward, news claim, or link to verify...";
+  if (mode === "image") {
+    claimInput.placeholder = "Optional: add a caption or context for the image...";
+  }
 }
 
 function showError(elementId, message) {
@@ -36,9 +64,12 @@ function hideError(elementId) {
 async function submitVerification(event) {
   event.preventDefault();
   const text = document.getElementById("claimInput").value.trim();
-  const image = document.getElementById("imageInput").files[0];
+  const image = activeInputMode === "image"
+    ? document.getElementById("imageInput").files[0]
+    : null;
   const button = document.getElementById("verifyBtn");
   hideError("verifyError");
+  document.getElementById("savedRecordNotice").classList.add("d-none");
 
   if (!text && !image) {
     showError("verifyError", "Enter a claim or attach an image.");
@@ -48,12 +79,16 @@ async function submitVerification(event) {
   const formData = new FormData();
   if (text) formData.append("text", text);
   if (image) formData.append("image", image);
+  formData.append("input_mode", activeInputMode);
 
+  document.getElementById("placeholderResult").classList.remove("d-none");
+  document.getElementById("actualResult").classList.add("d-none");
   button.disabled = true;
   button.textContent = "Analyzing...";
   try {
     const data = await fetchJson("/api/verify", { method: "POST", body: formData });
     renderVerificationResults(data);
+    await refreshDashboardData();
   } catch (error) {
     showError("verifyError", error.message);
   } finally {
@@ -67,6 +102,13 @@ function renderVerificationResults(data) {
   document.getElementById("actualResult").classList.remove("d-none");
 
   const verdict = data.verdict || "Unverified";
+  document.getElementById("resultClaim").textContent =
+    data.primary_claim || data.input_text || "No readable claim text was extracted.";
+  const savedNotice = document.getElementById("savedRecordNotice");
+  savedNotice.textContent = data.saved_to_database
+    ? `This ${verdict} result was saved to the shared verified-claims database${data.database_record_id ? ` (record #${data.database_record_id})` : ""}.`
+    : "This result was not saved. Only Likely True and Likely False claim results are added to the database.";
+  savedNotice.className = `alert ${data.saved_to_database ? "alert-success" : "alert-info"} mt-3`;
   const badge = document.getElementById("verdictBadge");
   badge.textContent = verdict.toUpperCase();
   badge.className = "badge-verdict";
@@ -144,6 +186,7 @@ function renderVerificationResults(data) {
   if (data.ocr_result?.error && data.input_text) notices.push(data.ocr_result.error);
   if (data.fact_check_lookup?.message) notices.push(data.fact_check_lookup.message);
   if (data.web_search?.message) notices.push(data.web_search.message);
+  if (data.article_extraction?.message) notices.push(data.article_extraction.message);
   mediaNotice.textContent = notices.join(" ");
 }
 
@@ -357,6 +400,273 @@ function filterFactChecks() {
   renderFactCheckTable(filtered);
 }
 
+function formatUpdatedAt(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function verdictClass(verdict) {
+  return verdict === "Likely True" ? "badge-true" : "badge-false";
+}
+
+async function loadSavedVerifications() {
+  const search = document.getElementById("savedDbSearchInput").value.trim();
+  const params = new URLSearchParams({ limit: "100" });
+  if (search) params.set("search", search);
+  hideError("savedDbError");
+  hideError("historyError");
+
+  try {
+    const result = await fetchJson(`/api/verifications?${params}`);
+    const records = Array.isArray(result.data) ? result.data : [];
+    renderSavedVerifications(records);
+  } catch (error) {
+    showError("savedDbError", error.message);
+    showError("historyError", error.message);
+  }
+}
+
+function renderSavedVerifications(records) {
+  const savedBody = document.getElementById("savedDbTableBody");
+  const historyBody = document.getElementById("historyTableBody");
+  const recent = document.getElementById("recentVerifications");
+  savedBody.replaceChildren();
+  historyBody.replaceChildren();
+  recent.replaceChildren();
+
+  if (!records.length) {
+    const savedRow = savedBody.insertRow();
+    const savedCell = savedRow.insertCell();
+    savedCell.colSpan = 7;
+    savedCell.className = "text-center text-muted py-4";
+    savedCell.textContent = "No conclusive verifications have been saved yet.";
+    const historyRow = historyBody.insertRow();
+    const historyCell = historyRow.insertCell();
+    historyCell.colSpan = 5;
+    historyCell.className = "text-center text-muted py-4";
+    historyCell.textContent = "No conclusive verifications have been saved yet.";
+    recent.textContent = "No conclusive results have been saved yet.";
+    return;
+  }
+
+  records.forEach(record => {
+    const row = savedBody.insertRow();
+    [record.id, record.claim].forEach(value => {
+      row.insertCell().textContent = value ?? "";
+    });
+    const verdictCell = row.insertCell();
+    const verdictBadge = document.createElement("span");
+    verdictBadge.className = `badge ${verdictClass(record.verdict)}`;
+    verdictBadge.textContent = record.verdict;
+    verdictCell.append(verdictBadge);
+    row.insertCell().textContent = `${record.confidence_score}%`;
+    row.insertCell().textContent = formatUpdatedAt(record.updated_at);
+    row.insertCell().textContent = Number(record.verification_count || 1).toLocaleString();
+
+    const actions = row.insertCell();
+    actions.className = "admin-column";
+    if (currentRole === "admin") {
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "btn btn-outline-info btn-sm me-1";
+      editButton.textContent = "Edit";
+      editButton.addEventListener("click", () => openEditVerification(record));
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "btn btn-outline-danger btn-sm";
+      deleteButton.textContent = "Delete";
+      deleteButton.addEventListener("click", () => deleteVerification(record));
+      actions.append(editButton, deleteButton);
+    } else {
+      actions.classList.add("d-none");
+    }
+
+    const historyRow = historyBody.insertRow();
+    historyRow.insertCell().textContent = record.claim;
+    const historyVerdict = historyRow.insertCell();
+    const historyBadge = document.createElement("span");
+    historyBadge.className = `badge ${verdictClass(record.verdict)}`;
+    historyBadge.textContent = record.verdict;
+    historyVerdict.append(historyBadge);
+    historyRow.insertCell().textContent = `${record.confidence_score}%`;
+    historyRow.insertCell().textContent = formatUpdatedAt(record.updated_at);
+    historyRow.insertCell().textContent = Number(record.verification_count || 1).toLocaleString();
+
+    const recentItem = document.createElement("div");
+    recentItem.className = "recent-item";
+    const icon = document.createElement("span");
+    icon.className = `recent-verdict-icon ${verdictClass(record.verdict)}`;
+    icon.innerHTML = record.verdict === "Likely True"
+      ? '<i class="fa-solid fa-check"></i>'
+      : '<i class="fa-solid fa-xmark"></i>';
+    const claim = document.createElement("span");
+    claim.className = "recent-claim";
+    claim.textContent = record.claim;
+    claim.title = record.claim;
+    const badge = document.createElement("span");
+    badge.className = `badge ${verdictClass(record.verdict)}`;
+    badge.textContent = record.verdict.replace("Likely ", "");
+    recentItem.append(icon, claim, badge);
+    recent.append(recentItem);
+  });
+}
+
+async function loadDashboardSummary() {
+  try {
+    const analytics = await fetchJson("/api/analytics");
+    document.getElementById("statFactChecks").textContent =
+      Number(analytics.total_fact_checks_indexed || 0).toLocaleString();
+    const saved = analytics.saved_verifications || {};
+    const verdicts = saved.verdicts || {};
+    document.getElementById("statVerifiedTotal").textContent =
+      Number(saved.total || 0).toLocaleString();
+    document.getElementById("statTrueCount").textContent =
+      Number(verdicts["Likely True"] || 0).toLocaleString();
+    document.getElementById("statFalseCount").textContent =
+      Number(verdicts["Likely False"] || 0).toLocaleString();
+  } catch (error) {
+    document.getElementById("statFactChecks").textContent = "—";
+    document.getElementById("statFactChecks").title = error.message;
+    document.getElementById("statVerifiedTotal").textContent = "—";
+    document.getElementById("statTrueCount").textContent = "—";
+    document.getElementById("statFalseCount").textContent = "—";
+  }
+}
+
+async function refreshDashboardData() {
+  await Promise.all([loadSavedVerifications(), loadDashboardSummary()]);
+}
+
+function updateRoleControls() {
+  const isAdmin = currentRole === "admin";
+  const badge = document.getElementById("roleBadge");
+  badge.textContent = isAdmin ? "Admin" : "User";
+  badge.classList.toggle("role-admin", isAdmin);
+  document.getElementById("adminLoginButton").classList.toggle("d-none", isAdmin);
+  document.getElementById("adminLogoutButton").classList.toggle("d-none", !isAdmin);
+  document.getElementById("adminDatabaseHint").textContent = isAdmin
+    ? "Admin mode: you can edit saved verdicts or remove database records."
+    : "Browsing as a credential-free user. Admin sign-in enables editing and deletion.";
+  document.querySelectorAll(".admin-column").forEach(column => {
+    column.classList.toggle("d-none", !isAdmin);
+  });
+}
+
+async function loadCurrentSession() {
+  try {
+    const session = await fetchJson("/api/session");
+    currentRole = session.role === "admin" ? "admin" : "user";
+    csrfToken = typeof session.csrf_token === "string" ? session.csrf_token : "";
+  } catch (error) {
+    currentRole = "user";
+    csrfToken = "";
+    document.getElementById("roleBadge").title =
+      `Could not check the session: ${error.message}`;
+  }
+  updateRoleControls();
+}
+
+async function submitAdminLogin(event) {
+  event.preventDefault();
+  const errorBox = document.getElementById("adminLoginError");
+  const submitButton = document.getElementById("adminLoginSubmit");
+  errorBox.classList.add("d-none");
+  submitButton.disabled = true;
+  try {
+    const credentials = {
+      username: document.getElementById("adminUsername").value,
+      password: document.getElementById("adminPassword").value
+    };
+    const session = await fetchJson("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(credentials)
+    });
+    currentRole = "admin";
+    csrfToken = session.csrf_token;
+    document.getElementById("adminPassword").value = "";
+    updateRoleControls();
+    bootstrap.Modal.getOrCreateInstance(
+      document.getElementById("adminLoginModal")
+    ).hide();
+    await loadSavedVerifications();
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.classList.remove("d-none");
+  } finally {
+    submitButton.disabled = false;
+  }
+}
+
+async function logoutAdmin() {
+  try {
+    await fetchJson("/api/admin/logout", {
+      method: "POST",
+      headers: csrfHeaders()
+    });
+    currentRole = "user";
+    csrfToken = "";
+    updateRoleControls();
+    await loadSavedVerifications();
+  } catch (error) {
+    showError("savedDbError", error.message);
+  }
+}
+
+function openEditVerification(record) {
+  editingRecord = record;
+  document.getElementById("editRecordId").value = record.id;
+  document.getElementById("editClaim").value = record.claim;
+  document.getElementById("editVerdict").value = record.verdict;
+  document.getElementById("editConfidence").value = record.confidence_score;
+  document.getElementById("editExplanation").value = record.explanation || "";
+  hideError("editVerificationError");
+  bootstrap.Modal.getOrCreateInstance(
+    document.getElementById("editVerificationModal")
+  ).show();
+}
+
+async function submitVerificationEdit(event) {
+  event.preventDefault();
+  if (!editingRecord) return;
+  hideError("editVerificationError");
+  const recordId = document.getElementById("editRecordId").value;
+  const changes = {
+    claim: document.getElementById("editClaim").value,
+    verdict: document.getElementById("editVerdict").value,
+    confidence_score: Number(document.getElementById("editConfidence").value),
+    explanation: document.getElementById("editExplanation").value,
+    sources: editingRecord.sources || []
+  };
+  try {
+    await fetchJson(`/api/verifications/${recordId}`, {
+      method: "PUT",
+      headers: { ...csrfHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(changes)
+    });
+    editingRecord = null;
+    bootstrap.Modal.getOrCreateInstance(
+      document.getElementById("editVerificationModal")
+    ).hide();
+    await refreshDashboardData();
+  } catch (error) {
+    showError("editVerificationError", error.message);
+  }
+}
+
+async function deleteVerification(record) {
+  if (!window.confirm(`Delete saved record #${record.id}?`)) return;
+  try {
+    await fetchJson(`/api/verifications/${record.id}`, {
+      method: "DELETE",
+      headers: csrfHeaders()
+    });
+    await refreshDashboardData();
+  } catch (error) {
+    showError("savedDbError", error.message);
+  }
+}
+
 async function loadAnalytics() {
   hideError("analyticsError");
   try {
@@ -494,19 +804,45 @@ async function loadFactCheckApiStatus() {
 }
 
 document.getElementById("verifyForm").addEventListener("submit", submitVerification);
+document.getElementById("verifyNavButton").addEventListener("click", () => {
+  bootstrap.Tab.getOrCreateInstance(
+    document.getElementById("dashboard-tab")
+  ).show();
+  document.getElementById("verifyForm").scrollIntoView({
+    behavior: "smooth",
+    block: "center"
+  });
+  document.getElementById("claimInput").focus({ preventScroll: true });
+});
+document.querySelectorAll("[data-input-mode]").forEach(button => {
+  button.addEventListener("click", () => setInputMode(button.dataset.inputMode));
+});
+document.getElementById("claimInput").addEventListener("input", event => {
+  document.getElementById("claimCharacterCount").textContent = event.target.value.length;
+});
 document.getElementById("simSendBtn").addEventListener("click", sendSimulatedMsg);
 document.getElementById("simInput").addEventListener("keydown", event => {
   if (event.key === "Enter") sendSimulatedMsg();
 });
 document.getElementById("dbSearchInput").addEventListener("input", filterFactChecks);
 document.getElementById("dbCatFilter").addEventListener("change", filterFactChecks);
+document.getElementById("savedDbSearchInput").addEventListener("input", loadSavedVerifications);
 document.getElementById("benchmarkSearchForm").addEventListener("submit", searchBenchmark);
+document.getElementById("adminLoginForm").addEventListener("submit", submitAdminLogin);
+document.getElementById("adminLogoutButton").addEventListener("click", logoutAdmin);
+document.getElementById("editVerificationForm").addEventListener("submit", submitVerificationEdit);
+document.getElementById("refreshHistoryButton").addEventListener("click", loadSavedVerifications);
 document.querySelectorAll('#mainTab button[data-bs-toggle="tab"]').forEach(button => {
   button.addEventListener("shown.bs.tab", event => {
-    if (event.target.id === "db-tab") loadFactChecks();
+    if (event.target.id === "history-tab") loadSavedVerifications();
+    if (event.target.id === "db-tab") {
+      loadSavedVerifications();
+      loadFactChecks();
+    }
     if (event.target.id === "analytics-tab") loadAnalytics();
     if (event.target.id === "viva-tab") loadVivaInfo();
   });
 });
+loadCurrentSession().then(refreshDashboardData);
 loadWhatsAppStatus();
 loadFactCheckApiStatus();

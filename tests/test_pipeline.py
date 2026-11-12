@@ -73,6 +73,39 @@ class TestFactShieldPipeline(unittest.TestCase):
         self.assertNotIn("Forward to 10 groups", extracted["primary_claim"])
         self.assertTrue("UNESCO" in extracted["primary_claim"])
 
+    def test_article_link_verifies_extracted_article_claim(self):
+        article_claim = "The city of Exampleton published its annual river-water report on Tuesday."
+        article = {
+            "url": "https://news.example/article",
+            "title": "River report published",
+            "description": article_claim,
+            "text": f"River report published. {article_claim}",
+        }
+        with patch("app.core.pipeline.fetch_article", return_value=article), patch(
+            "app.core.pipeline.extract_article_claim",
+            return_value=article_claim.rstrip("."),
+        ), patch("app.core.pipeline.search_and_assess_claim") as search:
+            result = pipeline.verify(
+                text=article["url"],
+                input_mode="link",
+            )
+
+        search.assert_called_once_with(
+            article_claim.rstrip("."),
+            search_query="River report published",
+            exclude_urls=[article["url"]],
+        )
+        self.assertEqual(result["primary_claim"], article_claim.rstrip("."))
+        self.assertEqual(result["article_extraction"]["status"], "success")
+        self.assertEqual(result["article_extraction"]["url"], article["url"])
+
+    def test_link_mode_requires_a_valid_article_url(self):
+        result = pipeline.verify(text="This is an article title", input_mode="link")
+
+        self.assertEqual(result["verdict"], "Unverified")
+        self.assertIn("valid public article URL", result["error"])
+        self.assertEqual(result["article_extraction"]["status"], "error")
+
     def test_style_classifier(self):
         fake_style_text = "BREAKING NEWS!! SHARE IMMEDIATELY TO 10 GROUPS!! SECRET REMEDY 100% TRUE!!"
         features = style_classifier.extract_features(fake_style_text)

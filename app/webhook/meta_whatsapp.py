@@ -2,12 +2,14 @@ import hashlib
 import hmac
 import logging
 import os
+import sqlite3
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import requests
 
 from app.core.pipeline import pipeline
+from app.core.verification_store import verification_store
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,18 @@ META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v26.0")
 MAX_MEDIA_BYTES = 16 * 1024 * 1024
 
 MediaDownloader = Callable[[str], Tuple[bytes, str]]
+
+
+def _verify_and_save(
+    text: Optional[str] = None, image_bytes: Optional[bytes] = None
+) -> Dict[str, Any]:
+    result = pipeline.verify(text=text, image_bytes=image_bytes)
+    try:
+        verification_store.save_if_conclusive(result)
+    except sqlite3.Error:
+        logger.exception("Could not save a WhatsApp verification to the database.")
+        raise
+    return result
 
 
 def verify_meta_webhook(mode: Optional[str], token: Optional[str], challenge: Optional[str]):
@@ -101,7 +115,7 @@ def _reply_for_message(
 
     if message_type == "text":
         received_text = message.get("text", {}).get("body", "")
-        result = pipeline.verify(text=received_text)
+        result = _verify_and_save(text=received_text)
     elif message_type == "image":
         media_info = message.get("image", {})
         caption = media_info.get("caption", "")
@@ -115,7 +129,9 @@ def _reply_for_message(
             try:
                 media_bytes, mime_type = media_downloader(media_id)
                 if message_type == "image" and mime_type.startswith("image/"):
-                    result = pipeline.verify(text=caption or None, image_bytes=media_bytes)
+                    result = _verify_and_save(
+                        text=caption or None, image_bytes=media_bytes
+                    )
                     if result.get("ocr_result", {}).get("error") and caption:
                         warning = result["ocr_result"]["error"]
                 else:
@@ -165,7 +181,7 @@ def process_whatsapp_payload(
     if not entries:
         test_message = payload.get("message") or payload.get("text")
         if isinstance(test_message, str) and test_message:
-            result = pipeline.verify(text=test_message)
+            result = _verify_and_save(text=test_message)
             return {
                 "success": True,
                 "simulated": True,

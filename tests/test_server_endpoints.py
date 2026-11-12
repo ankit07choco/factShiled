@@ -3,17 +3,30 @@ from app.main import app
 import hashlib
 import hmac
 import json
+import pytest
 from unittest.mock import patch
 
 client = TestClient(app)
+
+@pytest.fixture(autouse=True)
+def isolate_verification_database(tmp_path, monkeypatch):
+    from app.core.verification_store import VerificationStore
+
+    store = VerificationStore(tmp_path / "test-verifications.sqlite3")
+    monkeypatch.setattr("app.main.verification_store", store)
+    monkeypatch.setattr("app.webhook.meta_whatsapp.verification_store", store)
+
 
 def test_home_page():
     resp = client.get("/")
     assert resp.status_code == 200
     assert "FactShield" in resp.text
     assert 'id="analytics-pane"' in resp.text
+    assert 'id="history-pane"' in resp.text
     assert 'id="db-pane"' in resp.text
+    assert 'id="adminLoginModal"' in resp.text
     assert 'href="/downloads/android"' in resp.text
+    assert client.get("/api/session").json()["role"] == "user"
     print("✅ Home Page returns 200 OK")
 
 def test_android_app_download_headers():
@@ -41,6 +54,157 @@ def test_verify_endpoint_text():
     assert data["confidence_score"] >= 70
     assert "BOOM" in data["explanation"]
     print("✅ POST /api/verify correctly classified false claim with explanation")
+
+def test_guest_verification_is_saved_and_matching_claim_is_updated():
+    first_result = {
+        "primary_claim": "The Sun rises in the east!",
+        "verdict": "Likely True",
+        "confidence_score": 91,
+        "explanation": "Supported by a published fact-check.",
+        "sources": [{"publisher": "Example", "url": "https://example.test/source"}],
+        "signals": {"source_evidence": {"score": 90}},
+    }
+    second_result = {
+        **first_result,
+        "primary_claim": "THE SUN rises in the east.",
+        "confidence_score": 94,
+        "explanation": "The latest assessment still supports this claim.",
+    }
+    with patch(
+        "app.main.pipeline.verify",
+        side_effect=[first_result, second_result],
+    ):
+        first = client.post("/api/verify", data={"text": first_result["primary_claim"]})
+        second = client.post("/api/verify", data={"text": second_result["primary_claim"]})
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["saved_to_database"] is True
+    assert first.json()["database_record_id"] == second.json()["database_record_id"]
+    records = client.get("/api/verifications").json()
+    assert records["total"] == 1
+    record = records["data"][0]
+    assert record["verification_count"] == 2
+    assert record["confidence_score"] == 94
+    assert record["sources"][0]["publisher"] == "Example"
+
+def test_unverified_result_is_not_saved():
+    with patch(
+        "app.main.pipeline.verify",
+        return_value={
+            "primary_claim": "A claim with no decisive evidence.",
+            "verdict": "Unverified",
+            "confidence_score": 0,
+            "explanation": "No decisive evidence was found.",
+        },
+    ):
+        response = client.post("/api/verify", data={"text": "A claim with no decisive evidence."})
+
+    assert response.status_code == 200
+    assert response.json()["saved_to_database"] is False
+    assert client.get("/api/verifications").json()["total"] == 0
+
+def test_image_verification_saves_result_without_retaining_image_bytes():
+    with patch(
+        "app.main.pipeline.verify",
+        return_value={
+            "primary_claim": "A verified claim extracted from an image.",
+            "verdict": "Likely True",
+            "confidence_score": 86,
+            "explanation": "The claim matched reliable evidence.",
+            "image_origin": {
+                "status": "success",
+                "verdict": "Inconclusive",
+                "explanation": "No clear visual evidence.",
+            },
+        },
+    ):
+        response = client.post(
+            "/api/verify",
+            data={"text": "A claim from an image."},
+            files={"image": ("forward.png", b"private-image-bytes", "image/png")},
+        )
+
+    assert response.status_code == 200
+    record = client.get("/api/verifications").json()["data"][0]
+    assert record["claim"] == "A verified claim extracted from an image."
+    assert "image" not in record
+    assert b"private-image-bytes" not in json.dumps(record).encode()
+
+def test_admin_login_edit_delete_and_guest_access(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "ADMIN_USERNAME", "site-admin")
+    monkeypatch.setattr(main_module, "ADMIN_PASSWORD", "strong-test-password")
+    monkeypatch.setattr(main_module, "SESSION_SECRET_CONFIGURED", True)
+    monkeypatch.setattr(main_module, "ADMIN_LOGIN_ENABLED", True)
+    test_client = TestClient(app, base_url="https://testserver")
+
+    with patch(
+        "app.main.pipeline.verify",
+        return_value={
+            "primary_claim": "A verified example claim.",
+            "verdict": "Likely True",
+            "confidence_score": 88,
+            "explanation": "Evidence supports this claim.",
+            "sources": [],
+        },
+    ):
+        response = test_client.post("/api/verify", data={"text": "A verified example claim."})
+    record_id = response.json()["database_record_id"]
+    changes = {
+        "claim": "An admin-corrected verified example claim.",
+        "verdict": "Likely False",
+        "confidence_score": 97,
+        "explanation": "The administrator reviewed the cited evidence.",
+        "sources": [],
+    }
+
+    assert test_client.get("/api/session").json()["role"] == "user"
+    assert test_client.put(f"/api/verifications/{record_id}", json=changes).status_code == 403
+    login = test_client.post(
+        "/api/admin/login",
+        json={"username": "site-admin", "password": "strong-test-password"},
+    )
+    assert login.status_code == 200
+    csrf_token = login.json()["csrf_token"]
+    assert test_client.get("/api/session").json()["role"] == "admin"
+    assert test_client.put(
+        f"/api/verifications/{record_id}", json=changes
+    ).status_code == 403
+
+    updated = test_client.put(
+        f"/api/verifications/{record_id}",
+        json=changes,
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert updated.status_code == 200
+    saved = test_client.get("/api/verifications").json()["data"][0]
+    assert saved["verdict"] == "Likely False"
+    assert saved["claim"] == changes["claim"]
+
+    deleted = test_client.delete(
+        f"/api/verifications/{record_id}",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert deleted.status_code == 200
+    assert test_client.get("/api/verifications").json()["total"] == 0
+    assert test_client.post(
+        "/api/admin/logout", headers={"X-CSRF-Token": csrf_token}
+    ).json()["role"] == "user"
+
+def test_admin_login_is_disabled_without_explicit_configuration(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "ADMIN_USERNAME", "")
+    monkeypatch.setattr(main_module, "ADMIN_PASSWORD", "")
+    monkeypatch.setattr(main_module, "SESSION_SECRET_CONFIGURED", False)
+    monkeypatch.setattr(main_module, "ADMIN_LOGIN_ENABLED", False)
+    response = client.post(
+        "/api/admin/login",
+        json={"username": "admin", "password": "anything"},
+    )
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
 
 def test_verify_bengali_chandrayaan_claim():
     claim = "চন্দ্রযান-৩ ২০২৩ সালের ২৩ আগস্ট চাঁদে সফলভাবে অবতরণ করেছিল।"
@@ -210,7 +374,7 @@ def test_video_is_absent_from_verification_api_schema():
     ]["schema"]
     schema_name = request_schema["$ref"].rsplit("/", 1)[-1]
     fields = schema["components"]["schemas"][schema_name]["properties"]
-    assert set(fields) == {"text", "image"}
+    assert set(fields) == {"text", "image", "input_mode"}
 
 def test_live_webhook_requires_signature_secret():
     payload = {"object": "whatsapp_business_account", "entry": []}
@@ -270,6 +434,7 @@ def test_webhook_simulator():
     assert data["success"] is True
     assert "reply_text" in data
     assert "Alt News" in data["reply_text"]
+    assert client.get("/api/verifications").json()["total"] >= 1
     print("✅ POST /webhook/whatsapp processes Meta Cloud API payload and creates reply")
 
 if __name__ == "__main__":

@@ -38,7 +38,8 @@ WhatsApp user → Meta WhatsApp Cloud API → FastAPI Webhook
 > 2. **Local text search:** TF-IDF similarity over the small bundled fact-check database (not a general web or knowledge search).
 > 3. **Web search:** Fetches public Bing search results without an API key; a local Ollama model assesses the snippets and returns linked sources when no local fact-check matches. This is not an independent fact-check or a guarantee of truth.
 > 4. **Style heuristics/classifier:** Flags ALL CAPS, urgency keywords, forwarding pressure, and sensational wording; style alone does not establish truth.
-> 5. **Source links:** Displays fact-check and web-search citations; it does not independently verify domain authority or corroborate every URL.
+> 5. **Article links:** Link mode fetches readable text from a public HTTP/HTTPS article page, extracts a central factual claim, and checks it against the local fact-check index and web search. The verdict applies to that claim, not the whole article; claims that lack independent corroboration remain Unverified. Private/local addresses, non-HTML pages, and pages over 2 MB are rejected. Some publishers block automated access; when that happens, paste the article text in Text mode or try a publicly accessible link. The submitted article is not treated as independent evidence for itself.
+> 6. **Source links:** Displays fact-check and web-search citations; it does not independently verify domain authority or corroborate every URL.
 >
 > The UI exposes signal weights for explanation, but verdicts are currently rule-based: a sufficiently relevant retrieved review supplies the True/False rating; without one the result is Unverified. The confidence number is a heuristic, not a calibrated probability.
 
@@ -115,6 +116,11 @@ If you do not already have a `.env` file, copy `.env.example` to `.env` and adju
 | `TESSERACT_CMD` | blank | Optional full path to the Tesseract executable |
 | `HOST` | `127.0.0.1` | Host used by `run.py` for local development |
 | `PORT` | `8000` | Port used by `run.py` |
+| `FACTSHIELD_DATABASE_PATH` | `data/factshield_verifications.sqlite3` | SQLite file for saved conclusive verification results |
+| `FACTSHIELD_ADMIN_USERNAME` | blank | Admin username; admin login stays disabled unless all three admin settings are configured |
+| `FACTSHIELD_ADMIN_PASSWORD` | blank | Strong, unique admin password; do not commit it |
+| `FACTSHIELD_SESSION_SECRET` | blank | Random secret used to sign admin session cookies |
+| `FACTSHIELD_SESSION_COOKIE_SECURE` | `false` | Set to `true` behind HTTPS in production |
 | `META_VERIFY_TOKEN` | blank | Optional Meta webhook verification token |
 | `META_APP_SECRET` | blank | Optional Meta webhook signature verification secret |
 | `META_WHATSAPP_TOKEN` | blank | Optional WhatsApp Cloud API access token |
@@ -138,6 +144,14 @@ Windows PowerShell:
 Open **http://127.0.0.1:8000**. The development server uses auto-reload and binds to localhost by default.
 
 Check model readiness at **http://127.0.0.1:8000/api/integrations-status**. It reports whether both local Ollama models are installed. FastAPI's interactive API documentation is available at **http://127.0.0.1:8000/docs**.
+
+### User and admin roles; automatic database updates
+
+- **User:** Every visitor is automatically treated as an anonymous user. No credentials or account setup are needed to verify claims or browse saved records.
+- **Admin:** Admin sign-in is available only after setting `FACTSHIELD_ADMIN_USERNAME`, a unique `FACTSHIELD_ADMIN_PASSWORD` of at least 12 characters, and a random `FACTSHIELD_SESSION_SECRET` of at least 32 characters in `.env`, then restarting the server. Generate a session secret with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. There is no built-in/default admin password. The admin can verify claims through the same form and edit or delete saved database records.
+- **Automatic saving:** Only `Likely True` and `Likely False` claim results are saved. `Unverified` and `Disputed` results are not. Rechecking an equivalent claim updates the existing SQLite record and increments its check count instead of creating duplicates.
+- **Privacy:** Saved claims, verdicts, explanations, confidence values, and source links are shared with site visitors. Original image files are not stored, but claim text extracted from an image may be saved if its verdict is conclusive. Do not submit private or sensitive material.
+- **Database file:** The app creates `data/factshield_verifications.sqlite3` on first use. It is local and Git-ignored. Back it up with the rest of the app data; do not delete the file if you want to keep saved results.
 
 ### Run tests
 
@@ -278,7 +292,7 @@ sudo ufw status
    ollama pull qwen2.5vl:3b
    ```
    Keep Ollama bound to localhost. The application defaults to `http://localhost:11434`; if Ollama runs on another machine, use only a private network address and firewall it to the application server.
-4. Create `/opt/factshield/.env` on the server from `.env.example` only if no `.env` exists (from the project directory, run `[ -f .env ] || cp .env.example .env`), then configure the model settings and any optional WhatsApp credentials. Restrict its file permissions (`chmod 600 .env`). Never paste secrets into the README or a public issue.
+4. Create `/opt/factshield/.env` on the server from `.env.example` only if no `.env` exists (from the project directory, run `[ -f .env ] || cp .env.example .env`), then configure the model settings and any optional WhatsApp credentials. Set `FACTSHIELD_ADMIN_USERNAME`, a strong unique `FACTSHIELD_ADMIN_PASSWORD`, a generated `FACTSHIELD_SESSION_SECRET`, and `FACTSHIELD_SESSION_COOKIE_SECURE=true` for the HTTPS site. Restrict `.env` permissions (`chmod 600 .env`). Never paste secrets into the README or a public issue.
 5. Run FactShield as a system service so it restarts automatically. For example, create `/etc/systemd/system/factshield.service` with `sudo nano /etc/systemd/system/factshield.service` (change `ubuntu` to the Linux account that owns the project):
    ```ini
    [Unit]
@@ -291,6 +305,7 @@ sudo ufw status
    User=ubuntu
    WorkingDirectory=/opt/factshield
    ExecStart=/opt/factshield/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+   UMask=0077
    Restart=always
    RestartSec=5
 
@@ -318,7 +333,7 @@ The server stores the project files and any optional local benchmark data on its
 
 ### Public deployment security
 
-The API currently has no user login or application-level rate limiting. Anyone who can reach it may submit text/images and consume server/model resources. Before inviting the public, add appropriate authentication or reverse-proxy rate limiting, monitor usage, and keep dependencies updated. The API limits image uploads to 16 MB, but this alone does not prevent abuse. Do not expose Ollama's API, `.env`, or an unauthenticated development server to the internet. FastAPI's `/docs` is enabled by default; restrict or disable it for a public production deployment if it should not be exposed.
+Verification and read-only database routes are intentionally available to anonymous users; admin-only database edits and deletes require an authenticated admin session and CSRF token. There is no application-level rate limiting, so anyone who can reach the site may submit text/images and consume server/model resources. Add reverse-proxy rate limiting, monitor usage, and keep dependencies updated before public launch. The API limits image uploads to 16 MB, but this alone does not prevent abuse. Do not expose Ollama's API, `.env`, or an unauthenticated development server to the internet. FastAPI's `/docs` is enabled by default; restrict or disable it for a public production deployment if it should not be exposed.
 
 ## 📚 Optional FEVER research benchmark
 
@@ -373,10 +388,14 @@ These values are copied from `data/evaluation_metrics.json`; the corresponding e
 - `GET /`: Website dashboard and simulator.
 - `GET /docs`: FastAPI interactive API documentation.
 - `GET /api/integrations-status`: Availability of the local text and vision models.
-- `POST /api/verify`: Multipart form with optional `text` and/or `image` fields. Image uploads are limited to 16 MB. An image response includes an `image_origin` result separate from the text-claim verdict; an image without readable text can still receive an image-origin assessment.
+- `POST /api/verify`: Multipart form with optional `text`, `image`, and `input_mode` fields. Set `input_mode=link` to extract and verify a public HTTP/HTTPS article URL pasted in `text`; private/local addresses, non-HTML pages, and pages over 2 MB are rejected. Image uploads are limited to 16 MB. An image response includes an `image_origin` result separate from the text-claim verdict; an image without readable text can still receive an image-origin assessment. Conclusive `Likely True` / `Likely False` claim results are automatically upserted into SQLite; uploaded image bytes are not retained.
+- `GET /api/session`: Returns the current role (`user` by default; `admin` after sign-in).
+- `POST /api/admin/login`, `POST /api/admin/logout`: Admin session sign-in and sign-out.
+- `GET /api/verifications`: Search/list saved conclusive verification records; available to guests.
+- `PUT /api/verifications/{id}`, `DELETE /api/verifications/{id}`: Edit or delete a saved record; admin session and CSRF token required.
 - `GET /downloads/android`: Downloads the APK if it exists at `app/static/downloads/factshield-android.apk`.
 - `GET /api/fact-checks`: Search and filter indexed published fact-checks.
-- `GET /api/analytics`: Aggregated evaluation metrics.
+- `GET /api/analytics`: Evaluation metrics and saved-verification counts.
 - `GET /api/viva-info`: Project metrics and limitations.
 - `GET /webhook/whatsapp`: Meta Cloud API handshake verification.
 - `POST /webhook/whatsapp`: Meta Cloud API incoming-message handler and local simulator.

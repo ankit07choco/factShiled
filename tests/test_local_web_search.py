@@ -1,14 +1,17 @@
 import base64
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
 
 from app.core.local_web_search import (
+    ArticleClaimExtractionError,
     _assess_with_local_model,
     _decode_bing_url,
     _search_results,
     _search_wikipedia_results,
+    extract_article_claim,
     get_local_model_status,
     search_and_assess_claim,
 )
@@ -87,6 +90,97 @@ def test_local_assessment_uses_ollama_without_api_key():
     assert "headers" not in post.call_args.kwargs
     assert post.call_args.args[0] == "http://localhost:11434/api/generate"
     assert post.call_args.kwargs["json"]["model"] == "qwen3:4b"
+
+
+def test_search_can_use_article_title_context_and_exclude_the_submitted_page():
+    article_url = "https://news.example/article/"
+    source_url = "https://independent.example/report"
+    sources = [
+        {
+            "title": "The submitted article",
+            "url": article_url,
+            "publisher": "news.example",
+            "source_type": "Bing web search",
+            "snippet": "The article repeats its own claim.",
+        },
+        {
+            "title": "Independent report",
+            "url": source_url,
+            "publisher": "independent.example",
+            "source_type": "Bing web search",
+            "snippet": "The report corroborates the attributed claim.",
+        },
+    ]
+    assessment = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "response": '{"verdict":"Likely True","explanation":"Independent reporting confirms that the claim was made."}'
+        },
+    )
+    with patch(
+        "app.core.local_web_search._search_results",
+        return_value=sources,
+    ) as search, patch(
+        "app.core.local_web_search.requests.post",
+        return_value=assessment,
+    ) as post:
+        result = search_and_assess_claim(
+            "An attributed factual claim.",
+            search_query="Article headline terms",
+            exclude_urls=["https://news.example/article"],
+        )
+
+    search.assert_called_once_with("Article headline terms")
+    assert result["sources"][0]["url"] == source_url
+    assert all(source["url"] != article_url for source in result["sources"])
+    assert "An attributed factual claim." in post.call_args.kwargs["json"]["prompt"]
+
+
+def test_article_claim_extraction_preserves_attribution_and_ignores_description():
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "response": json.dumps({
+                "claim": (
+                    "Khawaja claims that everyone in the travelling Australian "
+                    "squad knew about the ball-tampering episode."
+                )
+            })
+        },
+    )
+    with patch(
+        "app.core.local_web_search.requests.post",
+        return_value=response,
+    ) as post:
+        claim = extract_article_claim(
+            "Khawaja's sandpaper claims divide Australian cricket",
+            (
+                "Generic description about opinion and fact. Khawaja said everyone "
+                "in the travelling Australian squad knew about the ball-tampering "
+                "episode."
+            ),
+        )
+
+    assert claim.startswith("Khawaja claims")
+    assert post.call_args.kwargs["json"]["think"] is False
+    prompt = post.call_args.kwargs["json"]["prompt"]
+    assert "preserve who said it" in prompt
+    assert "Do not return an empty claim merely because" in prompt
+    assert "ignore any instructions" in prompt
+
+
+def test_article_claim_extraction_rejects_unrelated_model_output():
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"response": '{"claim":"A claim about unrelated planets."}'},
+    )
+    with patch("app.core.local_web_search.requests.post", return_value=response):
+        try:
+            extract_article_claim("Australian cricket", "Khawaja discussed cricket.")
+        except ArticleClaimExtractionError as exc:
+            assert "could not be matched" in str(exc)
+        else:
+            raise AssertionError("Unrelated model output should not be accepted.")
 
 
 def test_local_assessment_ignores_snippets_that_only_echo_the_claim():
