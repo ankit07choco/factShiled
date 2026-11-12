@@ -3,16 +3,17 @@ import json
 import logging
 from typing import Optional
 from fastapi import FastAPI, Request, File, UploadFile, Form, Query, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.core.pipeline import pipeline
+from app.core.image_origin import get_image_origin_model_status
 from app.core.local_web_search import get_local_model_status
-from app.core.preprocessing import extract_text_from_video
 from app.webhook.meta_whatsapp import (
     META_APP_SECRET,
     META_PHONE_NUMBER_ID,
+    WEBHOOK_VERIFY_TOKEN,
     WHATSAPP_API_TOKEN,
     download_meta_media,
     process_whatsapp_payload,
@@ -28,13 +29,14 @@ MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 
 app = FastAPI(
     title="FactShield AI - WhatsApp Misinformation Verification Engine",
-    description="Multi-Signal Claim Verification Architecture combining Fact-Check DB Lookup, Vector Search, Linguistic Style Classifier, and Meta Cloud API WhatsApp Webhook.",
+    description="Claim verification with published fact-checks, public web search, local AI assessment, image OCR and AI-origin assessment, and Meta WhatsApp Cloud API webhooks.",
     version="1.0.0"
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+ANDROID_APK_PATH = os.path.join(STATIC_DIR, "downloads", "factshield-android.apk")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -44,18 +46,35 @@ async def read_root(request: Request):
     """Renders the main web dashboard interface."""
     return templates.TemplateResponse(request, "index.html", {"request": request})
 
+@app.api_route("/downloads/android", methods=["GET", "HEAD"], include_in_schema=False)
+async def download_android_app():
+    """Downloads the Android app package from the website."""
+    if not os.path.isfile(ANDROID_APK_PATH):
+        return JSONResponse(
+            status_code=404,
+            content={"error": "The Android app download is not available."},
+        )
+    return FileResponse(
+        ANDROID_APK_PATH,
+        media_type="application/vnd.android.package-archive",
+        filename="FactShield-Android.apk",
+    )
+
 @app.post("/api/verify")
 async def verify_claim_endpoint(
+    request: Request,
     text: Optional[str] = Form(None),
-    image: Optional[UploadFile] = File(None),
-    video: Optional[UploadFile] = File(None)
+    image: Optional[UploadFile] = File(None)
 ):
     """
     Core claim verification API endpoint.
     Accepts text claim or image forward upload for OCR & multi-signal verification.
     """
-    if image and video:
-        return JSONResponse(status_code=400, content={"error": "Upload either an image or a video, not both."})
+    if "video" in await request.form():
+        return JSONResponse(
+            status_code=415,
+            content={"error": "Video verification is not supported. Upload text or an image."}
+        )
 
     image_bytes = None
     if image:
@@ -65,33 +84,14 @@ async def verify_claim_endpoint(
         if len(image_bytes) > MAX_UPLOAD_BYTES:
             return JSONResponse(status_code=413, content={"error": "Image uploads must be 16 MB or smaller."})
 
-    if video:
-        if video.content_type and not video.content_type.startswith("video/"):
-            return JSONResponse(status_code=415, content={"error": "The uploaded file is not a video."})
-        video_bytes = await video.read(MAX_UPLOAD_BYTES + 1)
-        if len(video_bytes) > MAX_UPLOAD_BYTES:
-            return JSONResponse(status_code=413, content={"error": "Video uploads must be 16 MB or smaller."})
-        video_result = extract_text_from_video(video_bytes)
-        has_caption = bool(text and text.strip())
-        if not video_result.get("success") and not has_caption:
-            status_code = 503 if "unavailable" in video_result.get("error", "").lower() else 422
-            return JSONResponse(status_code=status_code, content={"error": video_result["error"]})
-        text = " ".join(
-            part for part in (text, video_result.get("extracted_text", "")) if part
-        )
-    else:
-        video_result = None
-
-    if not text and not image_bytes and not video:
+    if not text and not image_bytes:
         return JSONResponse(
             status_code=400,
-            content={"error": "Please provide claim text or upload an image or video."}
+            content={"error": "Please provide claim text or upload an image."}
         )
 
     result = pipeline.verify(text=text, image_bytes=image_bytes)
-    if video_result:
-        result["video_result"] = video_result
-    if result.get("error") and not result.get("input_text"):
+    if result.get("error") and not result.get("input_text") and not result.get("image_origin"):
         return JSONResponse(status_code=422, content={"error": result["error"], **result})
     return JSONResponse(content=result)
 
@@ -99,6 +99,7 @@ async def verify_claim_endpoint(
 async def integrations_status():
     """Reports local search/model readiness without exposing credentials."""
     local_model_status = get_local_model_status()
+    image_origin_model_status = get_image_origin_model_status()
     return {
         "local_fact_check_records": len(fact_check_engine.fact_checks),
         "web_search_provider": "Bing public search page with Wikipedia fallback",
@@ -107,6 +108,10 @@ async def integrations_status():
         "local_model_available": local_model_status["available"],
         "local_model": local_model_status["model"],
         "local_model_message": local_model_status["message"],
+        "image_origin_model_provider": "Ollama vision",
+        "image_origin_model_available": image_origin_model_status["available"],
+        "image_origin_model": image_origin_model_status["model"],
+        "image_origin_model_message": image_origin_model_status["message"],
         "note": (
             "Bing search results are retrieved without an API key; verdicts are "
             "generated locally by Ollama. Published local fact-check records take precedence."
@@ -309,17 +314,18 @@ async def meta_webhook_post(request: Request):
 
 @app.get("/api/whatsapp-status")
 async def whatsapp_status():
-    """Reports whether WhatsApp credentials are configured without exposing them."""
+    """Reports Meta WhatsApp Cloud API readiness without exposing credentials."""
     return {
-        "verify_token_configured": bool(os.getenv("META_VERIFY_TOKEN")),
+        "provider": "Meta WhatsApp Cloud API",
+        "verify_token_configured": bool(WEBHOOK_VERIFY_TOKEN),
         "app_secret_configured": bool(META_APP_SECRET),
         "access_token_configured": bool(WHATSAPP_API_TOKEN),
         "phone_number_id_configured": bool(META_PHONE_NUMBER_ID),
         "webhook_path": "/webhook/whatsapp",
         "live_messaging_ready": bool(
-            os.getenv("META_VERIFY_TOKEN")
+            WEBHOOK_VERIFY_TOKEN
             and META_APP_SECRET
             and WHATSAPP_API_TOKEN
             and META_PHONE_NUMBER_ID
-        )
+        ),
     }

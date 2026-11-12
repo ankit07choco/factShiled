@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Any
 from app.core.preprocessing import detect_language, extract_urls, clean_text, extract_text_from_image
+from app.core.image_origin import assess_image_origin
 from app.core.claim_extraction import extract_claims
 from app.core.style_classifier import style_classifier
 from app.core.fact_check_search import fact_check_engine
@@ -20,10 +21,12 @@ class VerificationPipeline:
         """
         ocr_result = None
         input_text = text or ""
+        image_origin_result = None
 
         # Step 1: Preprocess (OCR if image forward)
         if image_bytes:
             ocr_result = extract_text_from_image(image_bytes)
+            image_origin_result = assess_image_origin(image_bytes)
             if ocr_result.get("success") and ocr_result.get("extracted_text"):
                 input_text = f"{input_text} {ocr_result['extracted_text']}".strip()
 
@@ -36,7 +39,15 @@ class VerificationPipeline:
                 ),
                 "verdict": "Unverified",
                 "confidence_score": 0,
-                "ocr_result": ocr_result
+                "ocr_result": ocr_result,
+                "image_origin": image_origin_result,
+                "whatsapp_reply": (
+                    "I could not read text from the image.\n\n"
+                    f"🖼️ *Image origin assessment:* {image_origin_result['verdict']}.\n"
+                    f"{image_origin_result['explanation']}\n\n"
+                    f"_{image_origin_result['disclaimer']}_"
+                    if image_origin_result else None
+                ),
             }
 
         cleaned = clean_text(input_text)
@@ -54,7 +65,25 @@ class VerificationPipeline:
             api_key="",
             language_code=lang_info["code"]
         )
-        web_search_result = search_and_assess_claim(primary_claim)
+        top_match = fact_check_result.get("top_match") or {}
+        matched_verdict = str(top_match.get("verdict", "")).casefold()
+        has_decisive_published_match = fact_check_result.get("has_match") and any(
+            verdict in matched_verdict
+            for verdict in ("false", "true", "scam", "misleading")
+        )
+        if has_decisive_published_match:
+            web_search_result = {
+                "status": "skipped",
+                "message": (
+                    "Public search was skipped because a relevant published "
+                    "fact-check already provides a verdict."
+                ),
+                "verdict": "Unverified",
+                "explanation": "",
+                "sources": [],
+            }
+        else:
+            web_search_result = search_and_assess_claim(primary_claim)
 
         # Signal 3: Style & Sensationalism classifier
         style_features = style_classifier.extract_features(input_text)
@@ -78,6 +107,12 @@ class VerificationPipeline:
             signals=verdict_data["signals"],
             language=lang_info["name"]
         )
+        if image_origin_result:
+            whatsapp_reply += (
+                f"\n\n🖼️ *Image origin assessment:* {image_origin_result['verdict']}.\n"
+                f"{image_origin_result['explanation']}\n\n"
+                f"_{image_origin_result['disclaimer']}_"
+            )
 
         return {
             "input_text": input_text,
@@ -85,6 +120,7 @@ class VerificationPipeline:
             "language": lang_info,
             "urls_detected": urls,
             "ocr_result": ocr_result,
+            "image_origin": image_origin_result,
             "verdict": verdict_data["verdict"],
             "confidence_score": verdict_data["confidence_score"],
             "explanation": verdict_data["explanation"],

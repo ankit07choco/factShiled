@@ -37,23 +37,17 @@ async function submitVerification(event) {
   event.preventDefault();
   const text = document.getElementById("claimInput").value.trim();
   const image = document.getElementById("imageInput").files[0];
-  const video = document.getElementById("videoInput").files[0];
   const button = document.getElementById("verifyBtn");
   hideError("verifyError");
 
-  if (!text && !image && !video) {
-    showError("verifyError", "Enter a claim or attach an image or video.");
-    return;
-  }
-  if (image && video) {
-    showError("verifyError", "Upload either an image or a video, not both.");
+  if (!text && !image) {
+    showError("verifyError", "Enter a claim or attach an image.");
     return;
   }
 
   const formData = new FormData();
   if (text) formData.append("text", text);
   if (image) formData.append("image", image);
-  if (video) formData.append("video", video);
 
   button.disabled = true;
   button.textContent = "Analyzing...";
@@ -94,6 +88,21 @@ function renderVerificationResults(data) {
   confidenceBar.className = `progress-bar ${badgeClass === "badge-false" ? "bg-danger" : badgeClass === "badge-true" ? "bg-success" : badgeClass === "badge-disputed" ? "bg-warning" : "bg-info"}`;
   document.getElementById("explanationText").textContent = data.explanation || "No explanation was returned.";
 
+  const imageOrigin = data.image_origin && typeof data.image_origin === "object"
+    ? data.image_origin
+    : null;
+  const imageOriginBox = document.getElementById("imageOriginResult");
+  imageOriginBox.classList.toggle("d-none", !imageOrigin);
+  if (imageOrigin) {
+    document.getElementById("imageOriginVerdict").textContent =
+      imageOrigin.verdict || "Inconclusive";
+    document.getElementById("imageOriginExplanation").textContent =
+      imageOrigin.explanation || imageOrigin.message || "No image-origin assessment was returned.";
+    document.getElementById("imageOriginDisclaimer").textContent =
+      imageOrigin.disclaimer ||
+      "Visual AI-image detection is uncertain and cannot prove an image's origin.";
+  }
+
   const signals = data.signals || {};
   document.getElementById("signalFcScore").textContent = signals.fact_check_match
     ? `${signals.fact_check_match.score}% (${signals.fact_check_match.rating})`
@@ -131,15 +140,10 @@ function renderVerificationResults(data) {
   }
 
   const mediaNotice = document.getElementById("mediaNotice");
-  const videoResult = data.video_result;
   const notices = [];
   if (data.ocr_result?.error && data.input_text) notices.push(data.ocr_result.error);
   if (data.fact_check_lookup?.message) notices.push(data.fact_check_lookup.message);
   if (data.web_search?.message) notices.push(data.web_search.message);
-  if (videoResult) {
-    notices.push(videoResult.error || "Sampled on-screen text was analyzed.");
-    notices.push("Video speech is not transcribed.");
-  }
   mediaNotice.textContent = notices.join(" ");
 }
 
@@ -170,13 +174,11 @@ async function sendSimulatedMsg() {
     let reply;
     if (media) {
       const formData = new FormData();
-      formData.append(media.type.startsWith("video/") ? "video" : "image", media);
+      formData.append("image", media);
       if (text) formData.append("text", text);
       const result = await fetchJson("/api/verify", { method: "POST", body: formData });
       reply = result.whatsapp_reply || `${result.verdict}: ${result.explanation || "No explanation returned."}`;
       if (result.ocr_result?.error && text) reply += `\n\n⚠️ ${result.ocr_result.error}`;
-      if (result.video_result?.error) reply += `\n\n${result.video_result.error}`;
-      if (result.video_result) reply += "\nVideo speech is not transcribed.";
     } else {
       const payload = {
         simulated: true,
@@ -462,11 +464,11 @@ async function loadWhatsAppStatus() {
     if (status.live_messaging_ready) {
       statusBox.textContent = `Meta credentials are configured. Register your public HTTPS URL + ${status.webhook_path} in Meta and subscribe to WhatsApp messages.`;
       statusBox.className = "alert alert-success small";
-      document.getElementById("botStatus").textContent = "Meta credentials configured";
+      document.getElementById("botStatus").textContent = "Meta configured";
     } else {
-      statusBox.textContent = `Local simulator is ready. Live DMs need Meta setup and these environment variables: ${missing.join(", ")}.`;
+      statusBox.textContent = `Local demo is ready. Live WhatsApp needs Meta setup and these environment variables: ${missing.join(", ")}.`;
       statusBox.className = "alert alert-warning small";
-      document.getElementById("botStatus").textContent = "Local simulator";
+      document.getElementById("botStatus").textContent = "Local demo";
     }
   } catch (error) {
     statusBox.textContent = `Could not check Meta setup: ${error.message}`;
@@ -480,8 +482,9 @@ async function loadFactCheckApiStatus() {
     const status = await fetchJson("/api/integrations-status");
     statusBox.textContent =
       `Bing web search requires no API key. ${status.local_fact_check_records} local published fact-check records are available. ` +
-      `${status.local_model_provider} (${status.local_model}): ${status.local_model_message}`;
-    statusBox.className = status.local_model_available
+      `${status.local_model_provider} (${status.local_model}): ${status.local_model_message} ` +
+      `Image-origin checks (${status.image_origin_model}): ${status.image_origin_model_message}`;
+    statusBox.className = status.local_model_available && status.image_origin_model_available
       ? "alert alert-info mt-3 small"
       : "alert alert-warning mt-3 small";
   } catch (error) {

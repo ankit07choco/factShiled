@@ -2,8 +2,6 @@ import re
 import io
 import os
 import shutil
-import subprocess
-import tempfile
 from PIL import Image
 from langdetect import detect, DetectorFactory
 
@@ -87,9 +85,8 @@ def extract_text_from_image(image_bytes: bytes) -> dict:
                 "image_dimensions": f"{width}x{height}",
                 "format": image.format or "JPEG",
                 "error": (
-                    "Tesseract OCR was not found. Install Tesseract, then add it to PATH "
-                    "or set TESSERACT_CMD to the full path of tesseract.exe "
-                    "(commonly C:\\Program Files\\Tesseract-OCR\\tesseract.exe), and restart the app."
+                    "Tesseract OCR was not found. Install Tesseract, then add its executable "
+                    "to PATH or set TESSERACT_CMD to the executable's full path, and restart the app."
                 )
             }
         except Exception as exc:
@@ -121,82 +118,4 @@ def extract_text_from_image(image_bytes: bytes) -> dict:
             "success": False,
             "extracted_text": "",
             "error": str(e)
-        }
-
-
-def extract_text_from_video(video_bytes: bytes, max_frames: int = 8) -> dict:
-    """Extracts visible text from sampled video frames using FFmpeg and image OCR."""
-    ffmpeg = shutil.which(os.getenv("FFMPEG_PATH") or "ffmpeg")
-    if not ffmpeg:
-        return {
-            "success": False,
-            "extracted_text": "",
-            "error": "Video frame extraction is unavailable. Install FFmpeg and add it to PATH."
-        }
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="factshield-video-") as temp_dir:
-            video_path = os.path.join(temp_dir, "upload.mp4")
-            output_pattern = os.path.join(temp_dir, "frame-%02d.jpg")
-            with open(video_path, "wb") as video_file:
-                video_file.write(video_bytes)
-
-            completed = subprocess.run(
-                [
-                    ffmpeg, "-nostdin", "-v", "error", "-t", "120",
-                    "-i", video_path,
-                    "-vf", "fps=1/10,scale=1280:-1:force_original_aspect_ratio=decrease",
-                    "-frames:v", str(max_frames), "-q:v", "4", "-y", output_pattern
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False
-            )
-            if completed.returncode != 0:
-                return {
-                    "success": False,
-                    "extracted_text": "",
-                    "error": f"Could not read the video: {completed.stderr.strip() or 'FFmpeg failed.'}"
-                }
-
-            frame_paths = sorted(
-                os.path.join(temp_dir, name)
-                for name in os.listdir(temp_dir)
-                if name.startswith("frame-") and name.endswith(".jpg")
-            )
-            extracted_frames = []
-            for frame_path in frame_paths:
-                with open(frame_path, "rb") as frame_file:
-                    extracted_frames.append(extract_text_from_image(frame_file.read()))
-            text = "\n".join(
-                frame["extracted_text"]
-                for frame in extracted_frames
-                if frame.get("success") and frame.get("extracted_text")
-            )
-            if not text:
-                return {
-                    "success": False,
-                    "extracted_text": "",
-                    "frames_analyzed": len(frame_paths),
-                    "error": "No readable on-screen text was found. Speech in the video is not transcribed."
-                }
-
-            return {
-                "success": True,
-                "extracted_text": text,
-                "frames_analyzed": len(frame_paths),
-                "error": None
-            }
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "extracted_text": "",
-            "error": "Video frame extraction timed out."
-        }
-    except OSError as exc:
-        return {
-            "success": False,
-            "extracted_text": "",
-            "error": f"Video frame extraction failed: {exc}"
         }

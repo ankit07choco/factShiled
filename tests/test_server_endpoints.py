@@ -13,10 +13,28 @@ def test_home_page():
     assert "FactShield" in resp.text
     assert 'id="analytics-pane"' in resp.text
     assert 'id="db-pane"' in resp.text
+    assert 'href="/downloads/android"' in resp.text
     print("✅ Home Page returns 200 OK")
 
+def test_android_app_download_headers():
+    resp = client.head("/downloads/android")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/vnd.android.package-archive"
+    assert "attachment" in resp.headers["content-disposition"]
+    assert int(resp.headers["content-length"]) > 0
+
 def test_verify_endpoint_text():
-    resp = client.post("/api/verify", data={"text": "UNESCO has declared Indian National Anthem best in the world"})
+    with patch(
+        "app.core.pipeline.search_and_assess_claim",
+        return_value={
+            "status": "not_configured",
+            "message": "Live search disabled in endpoint tests.",
+            "verdict": "Unverified",
+            "explanation": "",
+            "sources": [],
+        },
+    ):
+        resp = client.post("/api/verify", data={"text": "UNESCO has declared Indian National Anthem best in the world"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["verdict"] == "Likely False"
@@ -26,7 +44,17 @@ def test_verify_endpoint_text():
 
 def test_verify_bengali_chandrayaan_claim():
     claim = "চন্দ্রযান-৩ ২০২৩ সালের ২৩ আগস্ট চাঁদে সফলভাবে অবতরণ করেছিল।"
-    resp = client.post("/api/verify", data={"text": claim})
+    with patch(
+        "app.core.pipeline.search_and_assess_claim",
+        return_value={
+            "status": "not_configured",
+            "message": "Live search disabled in endpoint tests.",
+            "verdict": "Unverified",
+            "explanation": "",
+            "sources": [],
+        },
+    ):
+        resp = client.post("/api/verify", data={"text": claim})
     assert resp.status_code == 200
     data = resp.json()
     assert data["verdict"] == "Likely True"
@@ -72,6 +100,13 @@ def test_integrations_status_reports_local_model_without_api_keys():
             "model": "qwen3:4b",
             "message": "Local model is ready.",
         },
+    ), patch(
+        "app.main.get_image_origin_model_status",
+        return_value={
+            "available": True,
+            "model": "qwen2.5vl:3b",
+            "message": "Local image-origin model is ready.",
+        },
     ):
         resp = client.get("/api/integrations-status")
     assert resp.status_code == 200
@@ -80,8 +115,29 @@ def test_integrations_status_reports_local_model_without_api_keys():
     assert data["web_search_provider"] == "Bing public search page with Wikipedia fallback"
     assert data["local_model_provider"] == "Ollama"
     assert data["local_model_available"] is True
+    assert data["image_origin_model_available"] is True
+    assert data["image_origin_model"] == "qwen2.5vl:3b"
     assert data["local_fact_check_records"] >= 1
     assert "api_key" not in data
+
+def test_image_only_verification_returns_image_origin_result_without_ocr_text():
+    result = {
+        "error": "No readable text was found in the image.",
+        "verdict": "Unverified",
+        "image_origin": {
+            "status": "success",
+            "verdict": "Inconclusive",
+            "explanation": "No reliable visual provenance clues were found.",
+        },
+    }
+    with patch("app.main.pipeline.verify", return_value=result):
+        response = client.post(
+            "/api/verify",
+            files={"image": ("image.png", b"image-bytes", "image/png")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["image_origin"]["verdict"] == "Inconclusive"
 
 def test_fever_benchmark_endpoints_keep_research_labels_separate():
     status = {
@@ -121,33 +177,40 @@ def test_fever_benchmark_endpoints_keep_research_labels_separate():
     assert data["attribution"] == "FEVER dataset authors"
 
 def test_whatsapp_status_does_not_expose_credentials():
-    resp = client.get("/api/whatsapp-status")
+    with patch("app.main.WEBHOOK_VERIFY_TOKEN", "verify-token"), \
+         patch("app.main.META_APP_SECRET", "app-secret"), \
+         patch("app.main.WHATSAPP_API_TOKEN", "private-access-token"), \
+         patch("app.main.META_PHONE_NUMBER_ID", "phone-id"):
+        resp = client.get("/api/whatsapp-status")
     assert resp.status_code == 200
     data = resp.json()
     assert "live_messaging_ready" in data
+    assert data["provider"] == "Meta WhatsApp Cloud API"
+    assert data["live_messaging_ready"] is True
     assert "access_token_configured" in data
-    assert "access_token" not in data
+    assert "private-access-token" not in resp.text
 
 def test_verify_rejects_empty_request():
     resp = client.post("/api/verify")
     assert resp.status_code == 400
     assert "error" in resp.json()
 
-def test_video_upload_reports_missing_video_support():
-    with patch(
-        "app.main.extract_text_from_video",
-        return_value={
-            "success": False,
-            "extracted_text": "",
-            "error": "Video frame extraction is unavailable. Install FFmpeg."
-        }
-    ):
-        resp = client.post(
-            "/api/verify",
-            files={"video": ("forward.mp4", b"video-data", "video/mp4")}
-        )
-    assert resp.status_code == 503
-    assert "FFmpeg" in resp.json()["error"]
+def test_video_upload_is_rejected():
+    resp = client.post(
+        "/api/verify",
+        files={"video": ("forward.mp4", b"video-data", "video/mp4")}
+    )
+    assert resp.status_code == 415
+    assert "not supported" in resp.json()["error"]
+
+def test_video_is_absent_from_verification_api_schema():
+    schema = client.get("/openapi.json").json()
+    request_schema = schema["paths"]["/api/verify"]["post"]["requestBody"]["content"][
+        "multipart/form-data"
+    ]["schema"]
+    schema_name = request_schema["$ref"].rsplit("/", 1)[-1]
+    fields = schema["components"]["schemas"][schema_name]["properties"]
+    assert set(fields) == {"text", "image"}
 
 def test_live_webhook_requires_signature_secret():
     payload = {"object": "whatsapp_business_account", "entry": []}
