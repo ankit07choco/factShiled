@@ -1,6 +1,6 @@
-# FactShield AI: WhatsApp Misinformation Claim Verification System
+# FactShield AI:  Misinformation Claim Verification System
 
-FactShield AI is an end-to-end multi-signal claim verification system and web platform specifically engineered to detect and debunk viral WhatsApp misinformation forwards.
+FactShield AI is an end-to-end multi-signal claim verification system and web platform specifically engineered to detect and debunk viral  misinformation forwards.
 
 Unlike traditional academic models that treat misinformation as a simple binary text classification problem, FactShield uses a **claim verification pipeline** combining fact-check retrieval, semantic search, linguistic style heuristics, and source attribution.
 
